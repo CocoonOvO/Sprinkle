@@ -428,6 +428,7 @@ class TestLayeredStorageService:
         redis_mock.zrange = AsyncMock(return_value=[])
         redis_mock.zrevrange = AsyncMock(return_value=[])
         redis_mock.sadd = AsyncMock(return_value=1)
+        redis_mock.srem = AsyncMock(return_value=1)  # Added srem
         redis_mock.smembers = AsyncMock(return_value=set())
         redis_mock.delete = AsyncMock(return_value=1)
         redis_mock.expire = AsyncMock(return_value=True)
@@ -1050,6 +1051,7 @@ class TestMessageService:
         storage.get_conversation_messages = AsyncMock(return_value=[])
         storage.soft_delete_message = AsyncMock()
         storage.get_conversation = AsyncMock(return_value=None)
+        storage.save_conversation = AsyncMock()  # Added for send_message test
         return storage
     
     @pytest.fixture
@@ -1175,7 +1177,7 @@ class TestMessageService:
     @pytest.mark.asyncio
     async def test_edit_message_success(self, message_service, mock_storage, mock_permission):
         """Test successfully editing a message."""
-        from sprinkle.kernel.permission import Role
+        from sprinkle.kernel.permission import Role, PermissionCheckResult
         from sprinkle.storage.layered import MessageRecord
         
         msg_id = "msg_123"
