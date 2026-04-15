@@ -1,7 +1,7 @@
 # Sprinkle 架构文档
 
 > 虚拟聊天软件后端系统  
-> 版本：v0.1.0  
+> 版本：v0.2.0（审计修订版）  
 > 更新日期：2026-04-15
 
 ---
@@ -44,16 +44,20 @@
 
 | 项目 | 选择 | 说明 |
 |------|------|------|
-| **隔离级别** | 低隔离（共享进程） | 简单直接，插件通过 RPC 调用 |
-| **热拔插** | 支持 | 基于 `importlib` 实现插件动态加载 |
+| **隔离级别** | 共享进程 | 简单直接，插件通过事件总线通信 |
+| **热拔插** | 准热拔插（importlib + 状态重置） | 插件通过 importlib 重新加载模块，依赖状态清理机制 |
 | **插件通信** | 事件总线 | 插件通过事件总线进行通信 |
+
+> ⚠️ **风险提示**：共享进程模式下，插件崩溃可能影响主进程。建议插件实现超时保护和异常隔离。
 
 ### 流式消息处理
 
 ```
-[Agent] → (流式) → [Backend] → (完整后) → [所有接收方]
-              ↑
-         边接收边缓存，完整后才分发
+[Agent] → (流式接收) → [Buffer] → (完整后) → [分发] → [所有接收方]
+              ↑                    ↑
+        边接收边缓存         完整判断依据：
+        chunk_size 最大 64KB    - 收到 EOS 标记
+        - 超过 chunk_size      - 超时 5s 未收到新数据
 ```
 
 ---
@@ -110,9 +114,17 @@
 ```
 Session Manager
 ├── Connection Pool（连接池）
-├── Session Store（会话存储，Redis）
-└── Heartbeat（心跳检测）
+├── Session Store（会话存储，Redis + 内存）
+├── Heartbeat（心跳检测）
+│   ├── ping_interval: 30s（发送间隔）
+│   ├── ping_timeout: 10s（超时断开）
+│   └── max_retry: 3（最大重试次数）
+└── Reconnection Handler（断线重连）
+    ├── 会话恢复（从 Redis 恢复用户会话状态）
+    └── 消息补发（离线期间的消息通过 Redis 队列重发）
 ```
+
+> ⚠️ **会话持久化**：WebSocket 连接本身不持久化，但用户订阅关系、会话列表存储在 Redis 中，重启后可恢复。
 
 #### Message Router（消息路由）
 
@@ -121,7 +133,10 @@ Session Manager
 ```
 Message Router
 ├── Stream Buffer（流式消息缓冲）
-├── Message Queue（消息队列）
+│   ├── chunk_size: 64KB（最大单次接收）
+│   ├── max_buffer: 10MB（单消息最大）
+│   └── complete_trigger: EOS 标记 | 超时 5s
+├── Message Queue（消息队列，Redis）
 └── Dispatcher（分发器）
 ```
 
@@ -133,29 +148,23 @@ Message Router
 Event Bus
 ├── Event Registry（事件注册表）
 ├── Sync Dispatcher（同步分发器）
-└── Async Dispatcher（异步分发器）
+│   └── timeout: 5s（单事件处理超时）
+├── Async Dispatcher（异步分发器）
+├── Loop Detector（循环检测）
+│   └── max_depth: 10（事件链最大深度）
+└── Error Handler（错误处理）
 ```
 
-#### Plugin Manager（插件管理器）
-
-负责插件的加载、卸载、热拔插。
-
-```
-Plugin Manager
-├── Plugin Registry（插件注册表）
-├── Dependency Resolver（依赖解析器）
-├── Lifecycle Hooks（生命周期钩子）
-└── Plugin Sandbox（插件沙箱，共享进程）
-```
+> ⚠️ **循环防护**：事件链深度超过 10 层时自动中断，防止插件间循环触发导致死循环。
 
 ### 3.3 数据流
 
 ```
 1. [Client] --WebSocket--> [API Layer]
 2. [API Layer] --> [Session Manager] --> [Event Bus]
-3. [Event Bus] --> [Plugin Chain]（按优先级执行）
+3. [Event Bus] --> [Plugin Chain]（按优先级执行，含超时 5s 保护）
 4. [Plugin Chain] --> [Message Router]
-5. [Message Router] --> [流式缓冲] --> [完整消息]
+5. [Message Router] --> [Stream Buffer] --> [完整消息]
 6. [完整消息] --> [Session Manager] --> [所有订阅者]
 ```
 
@@ -174,8 +183,10 @@ Plugin Manager
 │  │  - name: str                                           │ │
 │  │  - version: str                                        │ │
 │  │  - dependencies: List[str]                             │ │
+│  │  - priority: int (0-100, 越高越先执行)                   │ │
 │  │  - on_load()                                           │ │
 │  │  - on_message(message) -> Optional[Message]            │ │
+│  │  - on_before_send(message) -> Message                   │ │
 │  │  - on_unload()                                         │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                              │                               │
@@ -208,6 +219,7 @@ class Plugin:
     name: str = "plugin-name"
     version: str = "1.0.0"
     dependencies: List[str] = []
+    priority: int = 50  # 0-100，越高越先执行
     
     def on_load(self):
         """插件加载时调用"""
@@ -222,11 +234,24 @@ class Plugin:
         return message
     
     def on_unload(self):
-        """插件卸载时调用"""
+        """插件卸载时调用（清理资源）"""
         pass
 ```
 
-### 4.4 事件总线
+### 4.4 插件隔离策略
+
+> ⚠️ **重要说明**：当前设计为**共享进程模式**，插件共享主进程内存空间。
+
+**风险**：
+- 插件崩溃可能导致主进程崩溃
+- 插件间可能有变量污染
+
+**保护措施**：
+- 事件处理超时保护（5s）
+- 事件链深度限制（max_depth: 10）
+- 插件需实现异常捕获，不向上抛出未处理异常
+
+### 4.5 事件总线
 
 ```python
 # 插件间通信示例
@@ -235,6 +260,9 @@ event_bus.on("message.received", self.handle_message)
 
 # 异步事件
 await event_bus.emit_async("agent.response", response)
+
+# 事件链深度保护
+# 如果事件 A -> B -> C -> ... -> A，深度超过 10 层则中断
 ```
 
 ---
@@ -261,69 +289,120 @@ users (用户表)
 
 #### users
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | UUID | 主键 |
-| username | VARCHAR(50) | 用户名 |
-| display_name | VARCHAR(100) | 显示名 |
-| user_type | VARCHAR(20) | human / agent |
-| metadata | JSONB | 扩展元数据 |
-| created_at | TIMESTAMPTZ | 创建时间 |
-| updated_at | TIMESTAMPTZ | 更新时间 |
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | UUID | PK | 主键 |
+| username | VARCHAR(50) | UNIQUE, NOT NULL | 用户名 |
+| display_name | VARCHAR(100) | NOT NULL | 显示名 |
+| user_type | VARCHAR(20) | NOT NULL, CHECK | human / agent |
+| metadata | JSONB | DEFAULT '{}' | 扩展元数据 |
+| created_at | TIMESTAMPTZ | DEFAULT NOW() | 创建时间 |
+| updated_at | TIMESTAMPTZ | DEFAULT NOW() | 更新时间 |
 
 #### conversations
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | UUID | 主键 |
-| type | VARCHAR(20) | direct / group |
-| name | VARCHAR(255) | 群聊名称 |
-| owner_id | UUID | 创建者 |
-| metadata | JSONB | 扩展元数据 |
-| created_at | TIMESTAMPTZ | 创建时间 |
-| updated_at | TIMESTAMPTZ | 更新时间 |
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | UUID | PK | 主键 |
+| type | VARCHAR(20) | NOT NULL, CHECK | direct / group |
+| name | VARCHAR(255) | | 群聊名称 |
+| owner_id | UUID | FK -> users.id, NOT NULL | 创建者 |
+| metadata | JSONB | DEFAULT '{}' | 扩展元数据 |
+| created_at | TIMESTAMPTZ | DEFAULT NOW() | 创建时间 |
+| updated_at | TIMESTAMPTZ | DEFAULT NOW() | 更新时间 |
 
 #### conversation_members
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| conversation_id | UUID | 外键 |
-| user_id | UUID | 外键 |
-| role | VARCHAR(20) | owner / admin / member |
-| nickname | VARCHAR(100) | 群内昵称 |
-| joined_at | TIMESTAMPTZ | 加入时间 |
-| is_active | BOOLEAN | 是否激活 |
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| conversation_id | UUID | PK, FK -> conversations.id | 会话ID |
+| user_id | UUID | PK, FK -> users.id | 用户ID |
+| role | VARCHAR(20) | NOT NULL, CHECK | owner / admin / member |
+| nickname | VARCHAR(100) | | 群内昵称 |
+| joined_at | TIMESTAMPTZ | DEFAULT NOW() | 加入时间 |
+| left_at | TIMESTAMPTZ | | 离开时间 |
+| is_active | BOOLEAN | DEFAULT TRUE | 是否激活 |
+
+> ✅ **联合主键**：`PRIMARY KEY (conversation_id, user_id)`
 
 #### messages
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| id | UUID | 主键 |
-| conversation_id | UUID | 外键 |
-| sender_id | UUID | 发送者 |
-| content | TEXT | 消息内容 |
-| content_type | VARCHAR(20) | text / markdown / image / file |
-| metadata | JSONB | 扩展元数据 |
-| reply_to | UUID | 回复的消息ID |
-| created_at | TIMESTAMPTZ | 创建时间 |
-| edited_at | TIMESTAMPTZ | 编辑时间 |
-| deleted_at | TIMESTAMPTZ | 删除时间 |
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | UUID | PK | 主键 |
+| conversation_id | UUID | FK -> conversations.id, NOT NULL, INDEX | 会话ID |
+| sender_id | UUID | FK -> users.id, NOT NULL | 发送者 |
+| content | TEXT | NOT NULL | 消息内容 |
+| content_type | VARCHAR(20) | NOT NULL, CHECK | text / markdown / image / file |
+| metadata | JSONB | DEFAULT '{}' | 扩展元数据 |
+| reply_to | UUID | FK -> messages.id | 回复的消息ID |
+| is_deleted | BOOLEAN | DEFAULT FALSE, INDEX | 软删除标记 |
+| created_at | TIMESTAMPTZ | DEFAULT NOW(), INDEX | 创建时间 |
+| edited_at | TIMESTAMPTZ | | 编辑时间 |
+| deleted_at | TIMESTAMPTZ | | 删除时间 |
 
-### 5.3 分层存储策略
+> ✅ **索引**：`INDEX idx_messages_conversation_time (conversation_id, created_at DESC)`
+
+#### files
+
+| 字段 | 类型 | 约束 | 说明 |
+|------|------|------|------|
+| id | UUID | PK | 主键 |
+| uploader_id | UUID | FK -> users.id, NOT NULL | 上传者 |
+| conversation_id | UUID | FK -> conversations.id | 关联会话 |
+| file_name | VARCHAR(255) | NOT NULL | 文件名 |
+| file_path | VARCHAR(500) | NOT NULL | 存储路径 |
+| file_size | BIGINT | NOT NULL | 文件大小(字节) |
+| mime_type | VARCHAR(100) | | MIME类型 |
+| created_at | TIMESTAMPTZ | DEFAULT NOW() | 创建时间 |
+
+### 5.3 CHECK 约束
+
+```sql
+-- users.user_type
+ALTER TABLE users ADD CONSTRAINT chk_user_type 
+    CHECK (user_type IN ('human', 'agent'));
+
+-- conversations.type
+ALTER TABLE conversations ADD CONSTRAINT chk_conversation_type 
+    CHECK (type IN ('direct', 'group'));
+
+-- conversation_members.role
+ALTER TABLE conversation_members ADD CONSTRAINT chk_member_role 
+    CHECK (role IN ('owner', 'admin', 'member'));
+
+-- messages.content_type
+ALTER TABLE messages ADD CONSTRAINT chk_content_type 
+    CHECK (content_type IN ('text', 'markdown', 'image', 'file', 'system'));
+```
+
+### 5.4 分层存储策略
 
 ```
 Redis（热数据）
-├── 最近 7 天的消息（按会话分桶）
+├── 最近 7 天的消息
+│   └── Key: messages:{conversation_id}:{date}（按日期分桶）
 ├── 在线用户状态
+│   └── Key: online:{user_id}
 ├── 离线消息队列
-└── 会话缓存
+│   └── Key: offline:{user_id} -> List[message_id]
+├── 会话缓存
+│   └── Key: conv:{conversation_id} -> JSON
+└── TTL: 7 天自动过期
 
 PostgreSQL（冷数据）
 ├── 历史消息（7 天以上）
 ├── 用户信息
 ├── 会话信息
 └── 文件元数据
+
+数据迁移
+├── 定时任务：每日 03:00 执行
+├── 迁移范围：messages 表 created_at < 7 天前
+└── 一致性保障：Redis 写入时不删除旧数据，迁移完成后统一清理
 ```
+
+> ⚠️ **一致性保障**：消息写入时同时写 Redis 和 PostgreSQL（双写），迁移任务只清理 Redis 数据。
 
 ---
 
@@ -344,20 +423,43 @@ PUT    /api/v1/users/me             更新当前用户
 会话：
 GET    /api/v1/conversations        会话列表
 POST   /api/v1/conversations        创建会话
-GET    /api/v1/conversations/:id    会话详情
-PUT    /api/v1/conversations/:id    更新会话
-DELETE /api/v1/conversations/:id    删除会话
+GET    /api/v1/conversations/{id}   会话详情
+PUT    /api/v1/conversations/{id}   更新会话
+DELETE /api/v1/conversations/{id}   删除会话（仅 owner）
 
 消息：
-GET    /api/v1/conversations/:id/messages     消息列表
-POST   /api/v1/conversations/:id/messages     发送消息
-PUT    /api/v1/messages/:id                   编辑消息
-DELETE /api/v1/messages/:id                   删除消息
+GET    /api/v1/conversations/{id}/messages     消息列表（分页）
+POST   /api/v1/conversations/{id}/messages     发送消息
+PUT    /api/v1/messages/{id}                   编辑消息（仅 sender）
+DELETE /api/v1/messages/{id}                   删除消息（软删除）
 
 成员：
-GET    /api/v1/conversations/:id/members     成员列表
-POST   /api/v1/conversations/:id/members     添加成员
-DELETE /api/v1/conversations/:id/members/:uid 移除成员
+GET    /api/v1/conversations/{id}/members      成员列表
+POST   /api/v1/conversations/{id}/members      添加成员（admin+）
+DELETE /api/v1/conversations/{id}/members/{uid} 移除成员（admin+）
+
+文件：
+POST   /api/v1/files/upload                   上传文件
+GET    /api/v1/files/{id}                     下载文件
+DELETE /api/v1/files/{id}                     删除文件
+```
+
+#### 分页规范
+
+```
+GET /api/v1/conversations/{id}/messages
+
+Query Parameters:
+- limit: int = 50（最大 100）
+- before: timestamp（时间倒序，翻页用）
+- after: timestamp（时间正序）
+
+Response:
+{
+  "items": [...],
+  "next_cursor": "timestamp",
+  "has_more": true
+}
 ```
 
 ### 6.2 WebSocket API
@@ -366,21 +468,122 @@ DELETE /api/v1/conversations/:id/members/:uid 移除成员
 连接：
 WS /ws/{token}
 
+分帧协议：
+{
+  "type": "message" | "subscribe" | "unsubscribe" | "ping" | "pong",
+  "id": "uuid"（可选，用于 ack）,
+  "params": {...}
+}
+
 客户端 → 服务端：
-- subscribe { conversation_id }   订阅会话
-- unsubscribe { conversation_id } 取消订阅
-- message { conversation_id, content, mentions } 发送消息
+
+1. 订阅会话
+{
+  "type": "subscribe",
+  "params": {
+    "conversation_id": "uuid"
+  }
+}
+
+2. 取消订阅
+{
+  "type": "unsubscribe", 
+  "params": {
+    "conversation_id": "uuid"
+  }
+}
+
+3. 发送消息
+{
+  "type": "message",
+  "id": "uuid",
+  "params": {
+    "conversation_id": "uuid",
+    "content": "string",
+    "content_type": "text",
+    "mentions": ["uuid"],
+    "reply_to": "uuid"
+  }
+}
+
+4. 心跳
+{
+  "type": "ping"
+}
 
 服务端 → 客户端：
-- message { ... }                 新消息
-- event { type, data }            事件通知
-- ack { message_id }              消息确认
-- error { code, message }         错误通知
+
+1. 新消息
+{
+  "type": "message",
+  "data": {
+    "id": "uuid",
+    "conversation_id": "uuid",
+    "sender_id": "uuid",
+    "content": "string",
+    "content_type": "text",
+    "mentions": ["uuid"],
+    "reply_to": "uuid",
+    "created_at": "timestamp"
+  }
+}
+
+2. 消息确认（ack）
+{
+  "type": "ack",
+  "id": "uuid"（对应客户端消息 id）,
+  "params": {
+    "status": "sent" | "error",
+    "message_id": "uuid"（服务端消息 id）,
+    "error": "string"
+  }
+}
+
+3. 事件通知
+{
+  "type": "event",
+  "event": "member_joined" | "member_left" | "conversation_updated",
+  "data": {...}
+}
+
+4. 错误
+{
+  "type": "error",
+  "code": 1001 | 1002 | 1003 | ...,
+  "message": "string"
+}
+
+Error Codes:
+- 1001: INVALID_PARAMS（参数错误）
+- 1002: UNAUTHORIZED（未认证）
+- 1003: FORBIDDEN（无权限）
+- 1004: NOT_FOUND（资源不存在）
+- 1005: RATE_LIMIT（限流）
+- 1010: INTERNAL_ERROR（服务器内部错误）
 ```
 
 ---
 
-## 7. 目录结构
+## 7. 权限矩阵
+
+| 操作 | Owner | Admin | Member | Bot/Agent |
+|------|-------|-------|--------|-----------|
+| 发送消息 | ✅ | ✅ | ✅ | ✅ |
+| 编辑自己的消息 | ✅ | ✅ | ✅ | ❌ |
+| 删除自己的消息 | ✅ | ✅ | ✅ | ❌ |
+| 删除他人的消息 | ✅ | ✅ | ❌ | ❌ |
+| 查看会话信息 | ✅ | ✅ | ✅ | ✅ |
+| 修改会话名称 | ✅ | ✅ | ❌ | ❌ |
+| 修改群公告 | ✅ | ✅ | ❌ | ❌ |
+| 添加成员 | ✅ | ✅ | ❌ | ❌ |
+| 移除成员 | ✅ | ✅ | ❌ | ❌ |
+| 设置管理员 | ✅ | ❌ | ❌ | ❌ |
+| 删除会话 | ✅ | ❌ | ❌ | ❌ |
+| 转让所有权 | ✅ | ❌ | ❌ | ❌ |
+
+---
+
+## 8. 目录结构
 
 ```
 Sprinkle/
@@ -399,7 +602,7 @@ Sprinkle/
 │       │   ├── __init__.py
 │       │   ├── manager.py       # 插件管理器
 │       │   ├── registry.py     # 插件注册表
-│       │   └── sandbox.py       # 插件沙箱
+│       │   └── sandbox.py       # 插件沙箱（共享进程）
 │       ├── models/              # 数据模型
 │       │   ├── __init__.py
 │       │   ├── user.py
@@ -426,10 +629,10 @@ Sprinkle/
 
 ---
 
-## 8. 配置示例
+## 9. 配置示例
 
 ```yaml
-# config.yaml
+# config.yaml.example - 开发环境配置
 
 app:
   name: Sprinkle
@@ -443,16 +646,18 @@ database:
   port: 5432
   name: sprinkle_db
   user: cream
-  password: ""
+  # password: ""  # 生产环境必须设置强密码
 
 redis:
   host: localhost
   port: 6379
   db: 0
+  # password: ""  # 生产环境建议设置密码
 
 websocket:
   ping_interval: 30
   ping_timeout: 10
+  max_retry: 3
 
 storage:
   hot_ttl_days: 7
@@ -461,18 +666,35 @@ storage:
 plugins:
   dir: ./plugins
   auto_load: true
+  timeout: 5  # 事件处理超时(秒)
+  max_depth: 10  # 事件链最大深度
 ```
+
+> ⚠️ **生产环境要求**：
+> - 数据库必须设置强密码
+> - Redis 建议设置密码
+> - 开启 HTTPS/WSS
+> - 配置日志记录
 
 ---
 
-## 9. 下一步计划
+## 10. 下一步计划
 
 1. **项目初始化**：搭建 FastAPI 项目骨架
 2. **核心模块实现**：Session Manager、Event Bus、Plugin Manager
-3. **插件系统完善**：实现插件热拔插机制
+3. **插件系统完善**：实现准热拔插机制
 4. **API 实现**：REST API + WebSocket 消息通道
 5. **测试**：单元测试 + 集成测试
 
 ---
 
-*文档由司康编写，基于主人确认的架构选型~🍪*
+## 附录 A：版本历史
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| v0.1.0 | 2026-04-15 | 初始版本 |
+| v0.2.0 | 2026-04-15 | 审计修订版：补充数据库约束、API 规范、权限矩阵、分层存储细节 |
+
+---
+
+*文档由司康编写，布莱妮审计~🍪🍫*
