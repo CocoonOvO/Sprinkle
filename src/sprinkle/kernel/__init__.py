@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Kernel module - core infrastructure components.
 
 Phase 2 implements:
@@ -63,10 +62,3 @@ __all__ = [
     "TokenData",
     "UserCredentials",
 ]
-=======
-"""Sprinkle kernel modules."""
-
-from sprinkle.kernel.message import Message
-
-__all__ = ["Message"]
->>>>>>> feature/phase3-plugins

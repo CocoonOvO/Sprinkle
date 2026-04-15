@@ -38,8 +38,9 @@ def event_loop():
 def sample_message() -> Message:
     """Create a sample message for testing."""
     return Message(
-        conversation_id=uuid4(),
-        sender_id=uuid4(),
+        id=str(uuid4()),
+        conversation_id=str(uuid4()),
+        sender_id=str(uuid4()),
         content="Hello, World!",
         content_type="text",
     )
@@ -49,8 +50,9 @@ def sample_message() -> Message:
 def bad_message() -> Message:
     """Create a message containing 'bad'."""
     return Message(
-        conversation_id=uuid4(),
-        sender_id=uuid4(),
+        id=str(uuid4()),
+        conversation_id=str(uuid4()),
+        sender_id=str(uuid4()),
         content="This is a bad message",
         content_type="text",
     )
@@ -770,8 +772,9 @@ class TestHelloWorldPlugin:
         plugin = HelloWorldPlugin()
         plugin.on_load()
         plugin.on_message(Message(
-            conversation_id=uuid4(),
-            sender_id=uuid4(),
+            id=str(uuid4()),
+            conversation_id=str(uuid4()),
+            sender_id=str(uuid4()),
             content="test"
         ))
         
@@ -858,8 +861,9 @@ class TestMessageLoggerPlugin:
         # Add more messages than max_entries
         for i in range(10):
             msg = Message(
-                conversation_id=uuid4(),
-                sender_id=uuid4(),
+                id=str(uuid4()),
+                conversation_id=str(uuid4()),
+                sender_id=str(uuid4()),
                 content=f"Message {i}"
             )
             plugin.on_message(msg)

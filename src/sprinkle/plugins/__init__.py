@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-"""Plugins module - plugin system."""
-
-__version__ = "0.1.0"
-=======
 """Sprinkle Plugin System."""
 
 from sprinkle.plugins.base import Plugin, DropMessage
@@ -15,4 +10,3 @@ __all__ = [
     "PluginManager",
     "PluginEventBus",
 ]
->>>>>>> feature/phase3-plugins
