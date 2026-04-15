@@ -82,6 +82,7 @@ def clear_all_stores():
     clear_message_store()
     clear_file_store()
     yield
+    # Cleanup after test
     clear_registered_users()
     clear_user_metadata()
     clear_conversation_store()
@@ -107,13 +108,33 @@ def auth_service():
 
 @pytest.fixture
 def override_auth_service(auth_service):
-    """Override auth service dependency."""
-    from sprinkle.api.dependencies import get_auth_service
+    """Override auth service dependency.
+    
+    Sets the global singleton directly so that create_tokens() also uses it.
+    """
+    import sprinkle.api.dependencies as deps
+    import sprinkle.api.auth as auth
+    
+    # Store original
+    original_auth_service = deps._auth_service
+    original_get_auth = deps.get_auth_service
+    
+    # Set the global singleton so create_tokens() uses the test's service
+    deps._auth_service = auth_service
+    
+    # Also set in auth module since it imports get_auth_service from dependencies
+    # But we need to make sure create_tokens uses the one from dependencies
+    
+    # Override via FastAPI dependency injection for Depends() calls
     def _override():
         return auth_service
-    app.dependency_overrides[get_auth_service] = _override
+    app.dependency_overrides[original_get_auth] = _override
+    
     yield auth_service
-    app.dependency_overrides.pop(get_auth_service, None)
+    
+    # Restore
+    app.dependency_overrides.pop(original_get_auth, None)
+    deps._auth_service = original_auth_service
 
 
 # ============================================================================

@@ -1,4 +1,4 @@
-"""User API endpoints."""
+"""User API endpoints - database-backed implementation."""
 
 from __future__ import annotations
 
@@ -8,8 +8,11 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from sprinkle.kernel.auth import AuthService, UserCredentials
-from sprinkle.api.dependencies import get_current_user, get_auth_service
+from sprinkle.api.auth import get_user_by_id
+from sprinkle.api.dependencies import get_current_user
+from sprinkle.kernel.auth import UserCredentials
+from sprinkle.models.user import User, UserType
+from sprinkle.storage.database import SessionLocal
 
 router = APIRouter()
 
@@ -37,10 +40,9 @@ class UpdateUserRequest(BaseModel):
 
 
 # ============================================================================
-# In-Memory User Metadata Store
+# In-Memory Metadata Store (kept for test compatibility)
 # ============================================================================
 
-# Store for user metadata: user_id -> {"display_name": str, "metadata": dict, "updated_at": datetime}
 _user_metadata: Dict[str, Dict[str, Any]] = {}
 
 
@@ -50,7 +52,7 @@ def get_user_metadata_store() -> Dict[str, Dict[str, Any]]:
 
 
 def clear_user_metadata() -> None:
-    """Clear user metadata (for testing)."""
+    """Clear user metadata store."""
     _user_metadata.clear()
 
 
@@ -70,17 +72,30 @@ async def get_me(
     
     Requires Bearer token authentication.
     """
-    # Get user metadata if exists
-    meta = _user_metadata.get(current_user.user_id, {})
-    display_name = meta.get("display_name", current_user.username)
+    # Fetch latest user data from database
+    db_user = get_user_by_id(current_user.user_id)
+    if not db_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    
+    # Parse extra_data as JSON for metadata
+    extra_data = {}
+    try:
+        import json
+        if db_user.extra_data:
+            extra_data = json.loads(db_user.extra_data)
+    except Exception:
+        pass
     
     return UserResponse(
-        id=current_user.user_id,
-        username=current_user.username,
-        display_name=display_name,
-        user_type="agent" if current_user.is_agent else "human",
-        metadata=meta.get("metadata", {}),
-        created_at=datetime.now(timezone.utc),  # Placeholder
+        id=db_user.id,
+        username=db_user.username,
+        display_name=db_user.display_name,
+        user_type="agent" if db_user.user_type == UserType.agent else "human",
+        metadata=extra_data,
+        created_at=db_user.created_at,
     )
 
 
@@ -98,30 +113,53 @@ async def update_me(
     - **display_name**: New display name (optional)
     - **metadata**: Additional metadata (optional, merged with existing)
     """
-    # Get or create metadata entry
-    if current_user.user_id not in _user_metadata:
-        _user_metadata[current_user.user_id] = {
-            "display_name": current_user.username,
-            "metadata": {},
-        }
+    import json
     
-    meta = _user_metadata[current_user.user_id]
-    
-    # Update fields if provided
-    if request.display_name is not None:
-        meta["display_name"] = request.display_name
-    
-    if request.metadata is not None:
-        # Merge metadata
-        meta["metadata"].update(request.metadata)
-    
-    meta["updated_at"] = datetime.now(timezone.utc)
-    
-    return UserResponse(
-        id=current_user.user_id,
-        username=current_user.username,
-        display_name=meta["display_name"],
-        user_type="agent" if current_user.is_agent else "human",
-        metadata=meta["metadata"],
-        created_at=datetime.now(timezone.utc),  # Placeholder
-    )
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == current_user.user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+        
+        # Update display_name if provided
+        if request.display_name is not None:
+            user.display_name = request.display_name
+        
+        # Merge metadata if provided
+        if request.metadata is not None:
+            current_extra = {}
+            try:
+                if user.extra_data:
+                    current_extra = json.loads(user.extra_data)
+            except Exception:
+                pass
+            current_extra.update(request.metadata)
+            user.extra_data = json.dumps(current_extra)
+        
+        user.updated_at = datetime.utcnow()
+        
+        db.commit()
+        db.refresh(user)
+        db.expunge(user)
+        
+        # Parse extra_data for response
+        extra_data = {}
+        try:
+            if user.extra_data:
+                extra_data = json.loads(user.extra_data)
+        except Exception:
+            pass
+        
+        return UserResponse(
+            id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+            user_type="agent" if user.user_type == UserType.agent else "human",
+            metadata=extra_data,
+            created_at=user.created_at,
+        )
+    finally:
+        db.close()
