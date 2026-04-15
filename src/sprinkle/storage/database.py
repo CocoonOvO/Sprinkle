@@ -31,15 +31,33 @@ def get_async_engine() -> AsyncEngine:
     
     Uses the database configuration to build the connection URL.
     Supports both synchronous and asynchronous drivers.
+    
+    For testing (SPRINKLE_TEST=1), uses NullPool to avoid connection reuse
+    issues across different event loops in async tests.
     """
+    import os
+    from sqlalchemy.pool import NullPool
+    
     db_url = _build_async_db_url(settings.database)
-    return create_async_engine(
-        db_url,
-        echo=settings.app.debug,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-    )
+    
+    # Check for test mode
+    is_test = os.environ.get("SPRINKLE_TEST", "0") == "1"
+    
+    if is_test:
+        return create_async_engine(
+            db_url,
+            echo=settings.app.debug,
+            pool_pre_ping=False,
+            poolclass=NullPool,
+        )
+    else:
+        return create_async_engine(
+            db_url,
+            echo=settings.app.debug,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+        )
 
 
 def _build_async_db_url(db_config) -> str:
@@ -104,6 +122,35 @@ def get_sync_engine():
         echo=settings.app.debug,
         pool_pre_ping=True,
     )
+
+
+# ============================================================================
+# Sync Session (for API endpoints and scripts)
+# ============================================================================
+
+@lru_cache()
+def get_sync_session_factory():
+    """Get a synchronous session factory."""
+    engine = get_sync_engine()
+    from sqlalchemy.orm import sessionmaker
+    return sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+
+def get_session_local():
+    """Get a synchronous session factory (SessionLocal pattern).
+    
+    Returns a sessionmaker that can be used like:
+        db = SessionLocal()
+        try:
+            ...
+        finally:
+            db.close()
+    """
+    return get_sync_session_factory()
+
+
+# Expose SessionLocal for direct use (e.g., SessionLocal())
+SessionLocal = get_sync_session_factory()
 
 
 # ============================================================================
