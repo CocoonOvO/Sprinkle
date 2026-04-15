@@ -5,11 +5,15 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from sprinkle.config import settings
+from sprinkle.api import api_router
 
 app = FastAPI(
     title=settings.app.name,
     debug=settings.app.debug,
 )
+
+# Include API router
+app.include_router(api_router)
 
 
 @app.get("/")
