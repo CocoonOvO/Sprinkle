@@ -1,7 +1,7 @@
 # Sprinkle 架构文档
 
 > 虚拟聊天软件后端系统  
-> 版本：v0.2.0（审计修订版）  
+> 版本：v0.3.0（第二轮审计修订版）  
 > 更新日期：2026-04-15
 
 ---
@@ -317,7 +317,7 @@ users (用户表)
 |------|------|------|------|
 | id | UUID | PK | 主键 |
 | type | VARCHAR(20) | NOT NULL, CHECK | direct / group |
-| name | VARCHAR(255) | | 群聊名称（group 类型时建议非空） |
+| name | VARCHAR(255) | NOT NULL | 群聊名称（group 类型时必填） |
 | owner_id | UUID | FK -> users.id, NOT NULL | 创建者 |
 | metadata | JSONB | DEFAULT '{}' | 扩展元数据 |
 | created_at | TIMESTAMPTZ | DEFAULT NOW() | 创建时间 |
