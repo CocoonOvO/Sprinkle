@@ -35,6 +35,15 @@ from sprinkle.kernel.auth import (
     TokenData,
     UserCredentials,
 )
+from sprinkle.kernel.permission import (
+    PermissionService,
+    Role,
+    Action,
+    PermissionCheckResult,
+    MemberInfo,
+    get_permission_service,
+    set_permission_service,
+)
 
 __all__ = [
     # Session
@@ -61,4 +70,12 @@ __all__ = [
     "AuthService",
     "TokenData",
     "UserCredentials",
+    # Permission (Phase 6)
+    "PermissionService",
+    "Role",
+    "Action",
+    "PermissionCheckResult",
+    "MemberInfo",
+    "get_permission_service",
+    "set_permission_service",
 ]
