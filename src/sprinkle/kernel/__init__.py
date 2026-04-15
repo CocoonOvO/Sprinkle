@@ -79,3 +79,4 @@ __all__ = [
     "get_permission_service",
     "set_permission_service",
 ]
+__version__ = "0.1.0"

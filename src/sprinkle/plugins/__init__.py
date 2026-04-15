@@ -10,3 +10,4 @@ __all__ = [
     "PluginManager",
     "PluginEventBus",
 ]
+__version__ = "0.1.0"
