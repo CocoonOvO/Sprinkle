@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import AsyncGenerator
+from urllib.parse import quote_plus
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -23,6 +25,7 @@ class Base(DeclarativeBase):
 # Async Engine & Session
 # ============================================================================
 
+@lru_cache()
 def get_async_engine() -> AsyncEngine:
     """Create and return an async SQLAlchemy engine.
     
@@ -57,7 +60,7 @@ def _build_async_db_url(db_config) -> str:
     port = db_config.port or 5432
     name = db_config.name or ""
     
-    return f"{driver}://{user}:{password}@{host}:{port}/{name}"
+    return f"{driver}://{user}:{quote_plus(password)}@{host}:{port}/{name}"
 
 
 def get_async_session_factory() -> sessionmaker[AsyncSession]:
@@ -94,7 +97,7 @@ def get_sync_engine():
     """
     from sqlalchemy import create_engine
     
-    db_url = f"{settings.database.driver}://{settings.database.user}:{settings.database.password}@{settings.database.host}:{settings.database.port}/{settings.database.name}"
+    db_url = f"{settings.database.driver}://{settings.database.user}:{quote_plus(settings.database.password)}@{settings.database.host}:{settings.database.port}/{settings.database.name}"
     
     return create_engine(
         db_url,

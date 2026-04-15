@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 import yaml
 from pydantic import BaseModel, Field
@@ -36,7 +37,7 @@ class DatabaseConfig(BaseModel):
     @property
     def url(self) -> str:
         """Get the database URL."""
-        return f"{self.driver}://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        return f"{self.driver}://{self.user}:{quote_plus(self.password)}@{self.host}:{self.port}/{self.name}"
 
 
 class RedisConfig(BaseModel):
@@ -198,7 +199,7 @@ class DatabaseConfigDC:
     @property
     def url(self) -> str:
         """Get the database URL."""
-        return f"{self.driver}://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        return f"{self.driver}://{self.user}:{quote_plus(self.password)}@{self.host}:{self.port}/{self.name}"
 
 
 @dataclass
