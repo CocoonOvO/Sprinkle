@@ -554,7 +554,7 @@ WSS /ws?token=xxx（生产环境必须使用 WSS）
   }
 }
 
-3. 发送消息
+3. 发送消息（普通模式）
 {
   "type": "message",
   "id": "uuid",
@@ -566,6 +566,57 @@ WSS /ws?token=xxx（生产环境必须使用 WSS）
     "reply_to": "uuid"
   }
 }
+
+4. 流式发送消息（Agent 模式）
+用于 Agent 边生成边发送的场景（如 AI 助手流式回复）。
+
+```
+// 开始发送（start）
+{
+  "type": "message.start",
+  "id": "uuid",
+  "params": {
+    "conversation_id": "uuid",
+    "content_type": "text",
+    "mentions": ["uuid"],
+    "reply_to": "uuid"
+  }
+}
+
+// 内容块（多个 chunk 依次发送）
+{
+  "type": "message.chunk",
+  "id": "uuid",
+  "params": {
+    "content": "string",  // 本次发送的文本片段
+    "offset": 0           // 文本在完整消息中的字符偏移
+  }
+}
+
+// 结束发送（end）
+{
+  "type": "message.end",
+  "id": "uuid",
+  "params": {
+    "is_complete": true   // true = 完整发送完成，等待分发
+  }
+}
+
+// 取消发送
+{
+  "type": "message.cancel",
+  "id": "uuid"
+}
+```
+
+> ⚠️ **流式协议说明**：
+> - `message.start` → `message.chunk` × N → `message.end`：标准流式三阶段
+> - 每个 `message.start/end` 对应一个 `id`，`chunk` 必须引用同一个 `id`
+> - 服务端在收到 `message.end` 后，才会对完整消息进行分发
+> - 单个 `chunk` 最大 64KB，消息总大小最大 10MB
+> - 超时 5s 未收到 `message.end` 则自动取消并清理 buffer
+
+5. 心跳
 
 4. 心跳
 {
@@ -627,20 +678,31 @@ Error Codes:
 
 ## 7. 权限矩阵
 
-| 操作 | Owner | Admin | Member | Bot/Agent |
-|------|-------|-------|--------|-----------|
+> **角色说明**：
+> - `Owner`：群组创建者，拥有最高权限
+> - `Admin`：群组管理员，由 Owner 设置，可撤销
+> - `Member`：普通成员
+> - **Agent**：一种特殊成员类型，可被设置为 Admin（即 Agent Admin 拥有 Admin 权限）
+
+| 操作 | Owner | Admin | Agent（普通） | Agent（Admin） |
+|------|-------|-------|-----------|--------------|
 | 发送消息 | ✅ | ✅ | ✅ | ✅ |
-| 编辑自己的消息 | ✅ | ✅ | ✅ | ❌ |
-| 删除自己的消息 | ✅ | ✅ | ✅ | ❌ |
-| 删除他人的消息 | ✅ | ✅ | ❌ | ❌ |
+| 编辑自己的消息 | ✅ | ✅ | ❌ | ✅ |
+| 删除自己的消息 | ✅ | ✅ | ❌ | ✅ |
+| 删除他人的消息 | ✅ | ✅ | ❌ | ✅ |
 | 查看会话信息 | ✅ | ✅ | ✅ | ✅ |
-| 修改会话名称 | ✅ | ✅ | ❌ | ❌ |
-| 修改群公告 | ✅ | ✅ | ❌ | ❌ |
-| 添加成员 | ✅ | ✅ | ❌ | ❌ |
-| 移除成员 | ✅ | ✅ | ❌ | ❌ |
+| 修改会话名称 | ✅ | ✅ | ❌ | ✅ |
+| 修改群公告 | ✅ | ✅ | ❌ | ✅ |
+| 添加成员 | ✅ | ✅ | ❌ | ✅ |
+| 移除成员 | ✅ | ✅ | ❌ | ✅ |
 | 设置管理员 | ✅ | ❌ | ❌ | ❌ |
 | 删除会话 | ✅ | ❌ | ❌ | ❌ |
 | 转让所有权 | ✅ | ❌ | ❌ | ❌ |
+
+> **Agent 权限说明**：
+> - Agent 默认权限受限于"消息发送"，不能编辑/删除内容
+> - 但当 Agent 被设置为 Admin 时，拥有与 Admin 完全相同的权限
+> - Owner 可将任意 Agent 提升为 Admin（通过 `PUT /api/v1/conversations/{id}/members/{agent_id}` 设置 `role: "admin"`）
 
 ---
 
@@ -755,7 +817,7 @@ plugins:
 |------|------|------|
 | v0.1.0 | 2026-04-15 | 初始版本 |
 | v0.2.0 | 2026-04-15 | 审计修订版：补充数据库约束、API 规范、权限矩阵、分层存储细节 |
-| v0.3.0 | 2026-04-15 | 第二轮审计修订：修复 reply_to 级联策略、分层存储 TTL 逻辑、group name 约束、deleted_at 填充说明、API 权限校验、SSE 端点、WebSocket token 安全、on_message 语义、文件清理策略、流式 buffer 超时说明 |
+| v0.3.1 | 2026-04-15 | 修复流式消息发送协议（message.start/chunk/end 三阶段）、Agent 可设置为 Admin 权限 |
 
 ---
 
