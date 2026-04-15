@@ -101,7 +101,7 @@
 | **Phase 1** | 项目初始化 | P0 | 1h | ✅ 完成 | 无 |
 | **Phase 2** | 核心基础设施 | P0 | 4-6h | ✅ 完成 | Phase 1 |
 | **Phase 3** | 插件系统 | P0 | 3-4h | 🔄 进行中 | Phase 1, Phase 2 |
-| **Phase 4** | API 层 | P1 | 4-5h | ⏳ 待开始 | Phase 1, Phase 2 |
+| **Phase 4** | API 层 | P1 | 4-5h | 🔄 进行中 | Phase 1, Phase 2 |
 | **Phase 5** | WebSocket & SSE | P1 | 2-3h | ⏳ 待开始 | Phase 1-4 |
 | **Phase 6** | 业务逻辑 | P1 | 3-4h | ⏳ 待开始 | Phase 1-5 |
 | **Phase 7** | 测试 | P2 | 3-4h | ⏳ 待开始 | Phase 1-6 |
