@@ -134,11 +134,14 @@ Session Manager
 Message Router
 ├── Stream Buffer（流式消息缓冲）
 │   ├── chunk_size: 64KB（最大单次接收）
-│   ├── max_buffer: 10MB（单消息最大）
+│   ├── max_buffer: 10MB（单消息最大，超过则截断并返回 error）
+│   ├── timeout: 5s（从收到首个 chunk 开始计时，超时则终止接收）
 │   └── complete_trigger: EOS 标记 | 超时 5s
 ├── Message Queue（消息队列，Redis）
 └── Dispatcher（分发器）
 ```
+
+> ⚠️ **超时说明**：计时从接收到第一个 chunk 开始，5s 内未收到完整消息则终止接收并清理 buffer。
 
 #### Event Bus（事件总线）
 
@@ -213,6 +216,10 @@ Event Bus
 ### 4.3 生命周期钩子
 
 ```python
+class DropMessage(Exception):
+    """抛出此异常以截断消息，不再继续传递"""
+    pass
+
 class Plugin:
     """插件接口"""
     
@@ -226,11 +233,16 @@ class Plugin:
         pass
     
     def on_message(self, message: "Message") -> Optional["Message"]:
-        """消息拦截处理，返回 None 则继续传递"""
-        return None
+        """
+        消息拦截处理
+        - return message: 处理后的消息，继续传递
+        - return None: 不修改消息，继续传递
+        - raise DropMessage: 截断消息，不再传递
+        """
+        return message
     
     def on_before_send(self, message: "Message") -> "Message":
-        """消息发送前处理"""
+        """消息发送前处理（可修改消息内容）"""
         return message
     
     def on_unload(self):
@@ -305,11 +317,11 @@ users (用户表)
 |------|------|------|------|
 | id | UUID | PK | 主键 |
 | type | VARCHAR(20) | NOT NULL, CHECK | direct / group |
-| name | VARCHAR(255) | | 群聊名称 |
+| name | VARCHAR(255) | | 群聊名称（group 类型时建议非空） |
 | owner_id | UUID | FK -> users.id, NOT NULL | 创建者 |
 | metadata | JSONB | DEFAULT '{}' | 扩展元数据 |
 | created_at | TIMESTAMPTZ | DEFAULT NOW() | 创建时间 |
-| updated_at | TIMESTAMPTZ | DEFAULT NOW() | 更新时间 |
+| updated_at | TIMESTAMPTZ | DEFAULT NOW() | 更新时间（重命名、增删成员、修改公告时自动更新） |
 
 #### conversation_members
 
@@ -335,11 +347,11 @@ users (用户表)
 | content | TEXT | NOT NULL | 消息内容 |
 | content_type | VARCHAR(20) | NOT NULL, CHECK | text / markdown / image / file |
 | metadata | JSONB | DEFAULT '{}' | 扩展元数据 |
-| reply_to | UUID | FK -> messages.id | 回复的消息ID |
+| reply_to | UUID | FK -> messages.id ON DELETE SET NULL | 回复的消息ID（级联置空） |
 | is_deleted | BOOLEAN | DEFAULT FALSE, INDEX | 软删除标记 |
 | created_at | TIMESTAMPTZ | DEFAULT NOW(), INDEX | 创建时间 |
 | edited_at | TIMESTAMPTZ | | 编辑时间 |
-| deleted_at | TIMESTAMPTZ | | 删除时间 |
+| deleted_at | TIMESTAMPTZ | | 删除时间（由应用层自动填充） |
 
 > ✅ **索引**：`INDEX idx_messages_conversation_time (conversation_id, created_at DESC)`
 
@@ -382,13 +394,17 @@ ALTER TABLE messages ADD CONSTRAINT chk_content_type
 Redis（热数据）
 ├── 最近 7 天的消息
 │   └── Key: messages:{conversation_id}:{date}（按日期分桶）
+│   └── TTL: 8 天（比迁移周期多 1 天缓冲，确保迁移任务可访问）
 ├── 在线用户状态
 │   └── Key: online:{user_id}
+│   └── TTL: 5 分钟（心跳续期）
 ├── 离线消息队列
 │   └── Key: offline:{user_id} -> List[message_id]
+│   └── TTL: 30 天（离线消息保留）
 ├── 会话缓存
 │   └── Key: conv:{conversation_id} -> JSON
-└── TTL: 7 天自动过期
+│   └── TTL: 1 小时（定时失效）
+└── 注意：不使用自动过期删除，由迁移任务统一清理
 
 PostgreSQL（冷数据）
 ├── 历史消息（7 天以上）
@@ -398,11 +414,15 @@ PostgreSQL（冷数据）
 
 数据迁移
 ├── 定时任务：每日 03:00 执行
-├── 迁移范围：messages 表 created_at < 7 天前
-└── 一致性保障：Redis 写入时不删除旧数据，迁移完成后统一清理
+├── 迁移范围：Redis 中 created_at < 8 天前的消息
+└── 一致性保障：
+    1. 消息写入时双写（Redis + PostgreSQL）
+    2. Redis TTL 设为 8 天，留出缓冲时间
+    3. 迁移任务将 Redis 数据同步到 PostgreSQL 归档
+    4. 迁移完成后统一删除 Redis 旧数据（不是等 TTL 自动过期）
 ```
 
-> ⚠️ **一致性保障**：消息写入时同时写 Redis 和 PostgreSQL（双写），迁移任务只清理 Redis 数据。
+> ⚠️ **一致性保障**：消息写入时同时写 Redis 和 PostgreSQL（双写），迁移任务统一清理 Redis 数据，不再依赖 TTL 自动过期。
 
 ---
 
@@ -430,8 +450,8 @@ DELETE /api/v1/conversations/{id}   删除会话（仅 owner）
 消息：
 GET    /api/v1/conversations/{id}/messages     消息列表（分页）
 POST   /api/v1/conversations/{id}/messages     发送消息
-PUT    /api/v1/messages/{id}                   编辑消息（仅 sender）
-DELETE /api/v1/messages/{id}                   删除消息（软删除）
+PUT    /api/v1/messages/{id}                   编辑消息（仅 sender 可编辑自己的消息）
+DELETE /api/v1/messages/{id}                   删除消息（软删除，仅 sender 可删除自己的消息，admin 可删除任意消息）
 
 成员：
 GET    /api/v1/conversations/{id}/members      成员列表
@@ -441,7 +461,9 @@ DELETE /api/v1/conversations/{id}/members/{uid} 移除成员（admin+）
 文件：
 POST   /api/v1/files/upload                   上传文件
 GET    /api/v1/files/{id}                     下载文件
-DELETE /api/v1/files/{id}                     删除文件
+DELETE /api/v1/files/{id}                     删除文件（元数据软删除，物理文件异步清理）
+
+> **文件清理策略**：删除时仅将 `files.deleted_at` 置为当前时间（软删除），物理文件由后台任务异步清理，避免删除阻塞。
 ```
 
 #### 分页规范
@@ -462,11 +484,50 @@ Response:
 }
 ```
 
-### 6.2 WebSocket API
+### 6.3 SSE (Server-Sent Events)
+
+用于服务端主动推送事件通知（如成员变更、系统通知）。
+
+```
+GET /api/v1/events
+
+Headers:
+- Authorization: Bearer {token}
+- Accept: text/event-stream
+- Last-Event-ID: {id}（可选，断线重连用）
+
+响应类型：text/event-stream
+
+事件格式：
+event: {event_type}
+data: {json_data}
+id: {event_id}
+
+事件类型：
+- member_joined    成员加入
+- member_left      成员离开
+- conversation_updated  会话信息更新
+- message_sent     新消息（WS 的补充推送）
+
+断开重连：
+- 客户端需记录 Last-Event-ID
+- 断线后重新连接时携带 Last-Event-ID
+- 服务端从该 ID 之后开始推送遗漏事件
+
+心跳：
+- 服务端每 30s 发送一次 comment 行 `: heartbeat`
+```
+
+### 6.4 WebSocket API
 
 ```
 连接：
-WS /ws/{token}
+WSS /ws?token=xxx（生产环境必须使用 WSS）
+
+认证：
+- 方式一：Query Parameter `?token=xxx`（开发环境）
+- 方式二：Sec-WebSocket-Protocol 头传递 token（生产环境推荐）
+```
 
 分帧协议：
 {
@@ -694,6 +755,7 @@ plugins:
 |------|------|------|
 | v0.1.0 | 2026-04-15 | 初始版本 |
 | v0.2.0 | 2026-04-15 | 审计修订版：补充数据库约束、API 规范、权限矩阵、分层存储细节 |
+| v0.3.0 | 2026-04-15 | 第二轮审计修订：修复 reply_to 级联策略、分层存储 TTL 逻辑、group name 约束、deleted_at 填充说明、API 权限校验、SSE 端点、WebSocket token 安全、on_message 语义、文件清理策略、流式 buffer 超时说明 |
 
 ---
 
