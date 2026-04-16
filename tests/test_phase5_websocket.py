@@ -276,6 +276,35 @@ class TestConnectionManager:
         
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_send_to_websocket_disconnected(self, mock_websocket):
+        """Test sending to disconnected WebSocket returns False."""
+        from starlette.websockets import WebSocketState
+        mock_websocket.client_state = WebSocketState.DISCONNECTED
+        
+        await ConnectionManager.register_websocket("sess_123", mock_websocket)
+        
+        result = await ConnectionManager.send_to_websocket(
+            "sess_123",
+            {"type": "message"}
+        )
+        
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_send_to_websocket_exception(self, mock_websocket):
+        """Test sending to WebSocket that raises exception returns False."""
+        mock_websocket.send_json.side_effect = Exception("Send failed")
+        
+        await ConnectionManager.register_websocket("sess_123", mock_websocket)
+        
+        result = await ConnectionManager.send_to_websocket(
+            "sess_123",
+            {"type": "message"}
+        )
+        
+        assert result is False
+
     def test_add_stream_buffer(self):
         """Test adding stream buffer."""
         buffer = StreamBuffer(
@@ -303,6 +332,144 @@ class TestConnectionManager:
         
         assert removed == buffer
         assert ConnectionManager.get_stream_buffer("msg_123") is None
+
+    def test_remove_stream_buffer_not_found(self):
+        """Test removing non-existent stream buffer returns None."""
+        result = ConnectionManager.remove_stream_buffer("nonexistent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_register_sse(self):
+        """Test SSE registration."""
+        queue = asyncio.Queue()
+        
+        await ConnectionManager.register_sse("sess_sse_123", queue)
+        
+        assert ConnectionManager._sse_connections.get("sess_sse_123") == queue
+
+    @pytest.mark.asyncio
+    async def test_unregister_sse(self):
+        """Test SSE unregistration."""
+        queue = asyncio.Queue()
+        await ConnectionManager.register_sse("sess_sse_123", queue)
+        
+        removed = await ConnectionManager.unregister_sse("sess_sse_123")
+        
+        assert removed == queue
+        assert ConnectionManager._sse_connections.get("sess_sse_123") is None
+
+    @pytest.mark.asyncio
+    async def test_unregister_sse_not_found(self):
+        """Test unregistering non-existent SSE returns None."""
+        result = await ConnectionManager.unregister_sse("nonexistent")
+        assert result is None
+
+    def test_get_sse_queue(self):
+        """Test getting SSE queue."""
+        queue = asyncio.Queue()
+        ConnectionManager._sse_connections["sess_123"] = queue
+        
+        result = ConnectionManager.get_sse_queue("sess_123")
+        assert result == queue
+        
+        result_none = ConnectionManager.get_sse_queue("nonexistent")
+        assert result_none is None
+
+    @pytest.mark.asyncio
+    async def test_send_to_sse(self):
+        """Test sending event to SSE."""
+        queue = asyncio.Queue()
+        ConnectionManager._sse_connections["sess_123"] = queue
+        
+        result = await ConnectionManager.send_to_sse(
+            "sess_123",
+            "message_sent",
+            {"conversation_id": "conv_456", "content": "Hello"},
+            "event_123"
+        )
+        
+        assert result is True
+        
+        event = await queue.get()
+        assert event["event"] == "message_sent"
+        assert event["data"]["content"] == "Hello"
+        assert event["id"] == "event_123"
+
+    @pytest.mark.asyncio
+    async def test_send_to_sse_not_found(self):
+        """Test sending to non-existent SSE returns False."""
+        result = await ConnectionManager.send_to_sse(
+            "nonexistent",
+            "message_sent",
+            {"content": "Hello"}
+        )
+        
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_send_to_sse_exception(self):
+        """Test sending to SSE that raises exception returns False."""
+        queue = asyncio.Queue()
+        queue.put_nowait = lambda x: (_ for _ in ()).throw(Exception("Queue error"))
+        ConnectionManager._sse_connections["sess_123"] = queue
+        
+        result = await ConnectionManager.send_to_sse(
+            "sess_123",
+            "message_sent",
+            {"content": "Hello"}
+        )
+        
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_broadcast_to_conversation(self):
+        """Test broadcasting to conversation subscribers."""
+        from starlette.websockets import WebSocketState
+        
+        ws1 = AsyncMock()
+        ws1.client_state = WebSocketState.CONNECTED
+        ws1.send_json = AsyncMock()
+        
+        ws2 = AsyncMock()
+        ws2.client_state = WebSocketState.CONNECTED
+        ws2.send_json = AsyncMock()
+        
+        await ConnectionManager.register_websocket("sess_1", ws1)
+        await ConnectionManager.register_websocket("sess_2", ws2)
+        
+        message = {"type": "message", "data": {"id": "msg_123"}}
+        await ConnectionManager.broadcast_to_conversation(
+            "conv_456",
+            ["sess_1", "sess_2"],
+            message
+        )
+        
+        ws1.send_json.assert_called_once_with(message)
+        ws2.send_json.assert_called_once_with(message)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_event_to_conversation(self):
+        """Test broadcasting event to conversation subscribers."""
+        queue1 = asyncio.Queue()
+        queue2 = asyncio.Queue()
+        
+        await ConnectionManager.register_sse("sess_1", queue1)
+        await ConnectionManager.register_sse("sess_2", queue2)
+        
+        await ConnectionManager.broadcast_event_to_conversation(
+            "conv_456",
+            ["sess_1", "sess_2"],
+            "message_sent",
+            {"content": "Hello"}
+        )
+        
+        event1 = await queue1.get()
+        event2 = await queue2.get()
+        
+        assert event1["event"] == "message_sent"
+        assert event1["data"]["content"] == "Hello"
+        assert event2["event"] == "message_sent"
+        assert event2["data"]["content"] == "Hello"
 
 
 # ============================================================================

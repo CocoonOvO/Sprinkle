@@ -230,7 +230,7 @@ async def sse_heartbeat(queue: asyncio.Queue):
 @router.get("/api/v1/events")
 async def events_endpoint(
     request: Request,
-    Authorization: str = Depends(lambda: request.headers.get("Authorization")),
+    Authorization: str = Depends(lambda req: req.headers.get("Authorization", "")),
     Last_Event_ID: Optional[str] = Query(None, alias="Last-Event-ID"),
 ):
     """SSE 端点 - 服务端推送事件
@@ -371,7 +371,7 @@ async def events_endpoint(
 async def subscribe_to_conversation(
     request: Request,
     conversation_id: str,
-    Authorization: str = Depends(lambda: request.headers.get("Authorization")),
+    Authorization: str = Depends(lambda req: req.headers.get("Authorization", "")),
 ):
     """订阅会话事件
     
@@ -415,7 +415,7 @@ async def subscribe_to_conversation(
 async def unsubscribe_from_conversation(
     request: Request,
     conversation_id: str,
-    Authorization: str = Depends(lambda: request.headers.get("Authorization")),
+    Authorization: str = Depends(lambda req: req.headers.get("Authorization", "")),
 ):
     """取消订阅会话事件"""
     if not Authorization:

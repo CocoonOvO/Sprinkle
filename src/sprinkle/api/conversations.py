@@ -975,7 +975,12 @@ def check_owner_access(conversation_id: str, user_id: str) -> None:
 
 def _check_db_admin_access(conversation_id: str, user_id: str, db: Session) -> None:
     """Check admin access in database."""
-    _check_db_conversation_access(conversation_id, user_id, db)
+    conv = _check_db_conversation_access(conversation_id, user_id, db)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        )
     
     member = db.execute(
         select(ConversationMember)
