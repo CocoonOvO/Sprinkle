@@ -1,0 +1,20 @@
+# Sprinkle Configuration Example
+
+app:
+  name: "Sprinkle"
+  host: "0.0.0.0"
+  port: 8000
+  debug: false
+
+database:
+  driver: "postgresql"
+  host: "localhost"
+  port: 5432
+  name: "sprinkle_db"
+  user: "cream"
+  password: ""
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
