@@ -24,7 +24,7 @@ api_router.include_router(conversation_messages_router, prefix="/conversations",
 api_router.include_router(message_ops_router, prefix="/messages", tags=["messages"])
 api_router.include_router(members_router, prefix="/conversations", tags=["members"])
 api_router.include_router(files_router, prefix="/files", tags=["files"])
-api_router.include_router(events_router, tags=["events"])
+api_router.include_router(events_router, prefix="/events", tags=["events"])
 
 # WebSocket router (separate, mounted directly on app)
 from sprinkle.api.websocket import router as websocket_router

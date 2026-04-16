@@ -227,7 +227,7 @@ async def sse_heartbeat(queue: asyncio.Queue):
 # SSE Endpoint
 # ============================================================================
 
-@router.get("/api/v1/events")
+@router.get("")
 async def events_endpoint(
     request: Request,
     Authorization: str = Depends(lambda req: req.headers.get("Authorization", "")),
@@ -367,7 +367,7 @@ async def events_endpoint(
 # Subscription Management
 # ============================================================================
 
-@router.post("/api/v1/events/subscribe")
+@router.post("/subscribe")
 async def subscribe_to_conversation(
     request: Request,
     conversation_id: str,
@@ -411,7 +411,7 @@ async def subscribe_to_conversation(
     }
 
 
-@router.post("/api/v1/events/unsubscribe")
+@router.post("/unsubscribe")
 async def unsubscribe_from_conversation(
     request: Request,
     conversation_id: str,
