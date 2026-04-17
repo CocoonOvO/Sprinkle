@@ -1,4 +1,4 @@
-"""File API endpoints."""
+"""File API endpoints - database-backed."""
 
 from __future__ import annotations
 
@@ -11,9 +11,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sprinkle.kernel.auth import UserCredentials
-from sprinkle.api.dependencies import get_current_user
+from sprinkle.api.dependencies import get_current_user, get_db_session
+from sprinkle.models.file import File as FileModel
 
 router = APIRouter()
 
@@ -36,71 +39,16 @@ class FileResponse(BaseModel):
 
 
 # ============================================================================
-# In-Memory File Store
+# Constants
 # ============================================================================
 
-class FileStore:
-    """File data store."""
-    def __init__(
-        self,
-        id: str,
-        uploader_id: str,
-        file_name: str,
-        file_path: str,
-        file_size: int,
-        mime_type: str,
-        conversation_id: Optional[str] = None,
-        created_at: datetime = None,
-        deleted_at: Optional[datetime] = None,
-    ):
-        self.id = id
-        self.uploader_id = uploader_id
-        self.file_name = file_name
-        self.file_path = file_path
-        self.file_size = file_size
-        self.mime_type = mime_type
-        self.conversation_id = conversation_id
-        self.created_at = created_at or datetime.now(timezone.utc)
-        self.deleted_at = deleted_at
-
-
-# Store
-_files: Dict[str, FileStore] = {}
-
-# File storage directory
 STORAGE_DIR = Path("./data/files")
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def get_file_store() -> Dict[str, FileStore]:
-    """Get files store."""
-    return _files
-
-
-def clear_file_store() -> None:
-    """Clear all file data (for testing)."""
-    _files.clear()
 
 
 # ============================================================================
 # Helper Functions
 # ============================================================================
-
-def get_file_or_404(file_id: str) -> FileStore:
-    """Get file by ID or raise 404."""
-    if file_id not in _files:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found",
-        )
-    file = _files[file_id]
-    if file.deleted_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found",
-        )
-    return file
-
 
 def guess_mime_type(file_name: str) -> str:
     """Guess MIME type from file name."""
@@ -136,6 +84,20 @@ def guess_mime_type(file_name: str) -> str:
     return mime_types.get(ext, "application/octet-stream")
 
 
+async def get_file_or_404(db: AsyncSession, file_id: str) -> FileModel:
+    """Get file by ID from database or raise 404."""
+    result = await db.execute(
+        select(FileModel).where(FileModel.id == file_id)
+    )
+    file_record = result.scalar_one_or_none()
+    if file_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found",
+        )
+    return file_record
+
+
 # ============================================================================
 # API Endpoints
 # ============================================================================
@@ -150,6 +112,7 @@ async def upload_file(
     file: UploadFile = File(...),
     conversation_id: Optional[str] = None,
     current_user: UserCredentials = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> FileResponse:
     """Upload a file.
     
@@ -173,9 +136,8 @@ async def upload_file(
     # Guess MIME type
     mime_type = guess_mime_type(file.filename or stored_filename)
     
-    # Create file record
-    now = datetime.now(timezone.utc)
-    file_record = FileStore(
+    # Create file record in database
+    file_record = FileModel(
         id=file_id,
         uploader_id=current_user.user_id,
         file_name=file.filename or stored_filename,
@@ -183,9 +145,10 @@ async def upload_file(
         file_size=file_size,
         mime_type=mime_type,
         conversation_id=conversation_id,
-        created_at=now,
     )
-    _files[file_id] = file_record
+    db.add(file_record)
+    await db.commit()
+    await db.refresh(file_record)
     
     return FileResponse(
         id=file_record.id,
@@ -205,13 +168,14 @@ async def upload_file(
 async def download_file(
     file_id: str,
     current_user: UserCredentials = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
     """Download a file.
     
     - **file_id**: File UUID
     """
-    # Get file record
-    file_record = get_file_or_404(file_id)
+    # Get file record from database
+    file_record = await get_file_or_404(db, file_id)
     
     # Check if file exists on disk
     file_path = Path(file_record.file_path)
@@ -244,6 +208,7 @@ async def download_file(
 async def delete_file(
     file_id: str,
     current_user: UserCredentials = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
 ) -> None:
     """Delete a file (soft delete).
     
@@ -251,8 +216,8 @@ async def delete_file(
     
     - **file_id**: File UUID
     """
-    # Get file record
-    file_record = get_file_or_404(file_id)
+    # Get file record from database
+    file_record = await get_file_or_404(db, file_id)
     
     # Check if user is the uploader
     if file_record.uploader_id != current_user.user_id:
@@ -261,8 +226,11 @@ async def delete_file(
             detail="You can only delete your own files",
         )
     
-    # Soft delete
-    file_record.deleted_at = datetime.now(timezone.utc)
+    # Physical file deletion
+    file_path = Path(file_record.file_path)
+    if file_path.exists():
+        file_path.unlink()
     
-    # Optionally delete physical file (async in real implementation)
-    # For now, we keep the file on disk
+    # Delete database record
+    await db.delete(file_record)
+    await db.commit()

@@ -52,6 +52,8 @@ class MessageResponse(BaseModel):
     is_deleted: bool = False
     created_at: datetime
     edited_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -155,12 +157,14 @@ def _message_to_response(msg: Message) -> MessageResponse:
         sender_id=msg.sender_id,
         content=msg.content,
         content_type=msg.content_type.value if isinstance(msg.content_type, ContentType) else msg.content_type,
-        metadata={},
+        metadata=msg.message_metadata or {},
         mentions=[],
         reply_to=msg.reply_to_id,
         is_deleted=msg.is_deleted,
         created_at=msg.created_at,
-        edited_at=msg.updated_at,
+        edited_at=msg.edited_at,
+        deleted_at=msg.deleted_at,
+        deleted_by=msg.deleted_by,
     )
 
 
