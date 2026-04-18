@@ -9,19 +9,17 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sprinkle.kernel.auth import UserCredentials
 from sprinkle.api.dependencies import get_current_user, get_db_session
 from sprinkle.api.conversations import (
-    _conversations,
-    _members,
     check_conversation_access,
     check_admin_access,
     is_owner,
     is_admin,
     get_member_role,
+    is_member as check_conversation_member,
 )
 from sprinkle.models import Message, ContentType
 from sprinkle.storage.database import SessionLocal
@@ -83,11 +81,13 @@ router = conversation_messages_router
 
 
 # ============================================================================
-# In-Memory Message Store (kept for backwards compatibility with existing code)
+# Stub In-Memory Store (kept for backward compatibility with tests only)
 # ============================================================================
+# The API no longer uses these - all data goes through the database.
+# Tests may still write to these stubs but the API will not read from them.
 
 class MessageStore:
-    """Message data store (for backwards compatibility)."""
+    """Message data store (stub for test compatibility)."""
     def __init__(
         self,
         id: str,
@@ -117,22 +117,24 @@ class MessageStore:
         self.deleted_at = deleted_at
 
 
-# In-memory store (for backwards compatibility)
+# Stub stores (not used by API anymore, but tests may write to them)
 _messages: Dict[str, MessageStore] = {}
 
 
 def get_message_store() -> Dict[str, MessageStore]:
-    """Get messages store."""
+    """Get messages store (stub - not used by API, for test compatibility)."""
     return _messages
 
+
+# ============================================================================
+# Store Management (for testing)
+# ============================================================================
 
 def clear_message_store() -> None:
     """Clear all messages (for testing).
 
-    Clears both in-memory store and database tables.
+    Clears database tables.
     """
-    _messages.clear()
-    # Also clear from database
     db = SessionLocal()
     try:
         from sprinkle.models import Message
@@ -191,7 +193,7 @@ async def check_message_access_db(db: AsyncSession, message_id: str, user_id: st
     message = await get_message_or_404_db(db, message_id)
 
     # Check if user is a member of the conversation
-    if not is_member(message.conversation_id, user_id):
+    if not check_conversation_member(message.conversation_id, user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a member of this conversation",
@@ -202,9 +204,7 @@ async def check_message_access_db(db: AsyncSession, message_id: str, user_id: st
 
 def is_member(conversation_id: str, user_id: str) -> bool:
     """Check if user is a member of the conversation."""
-    key = (conversation_id, user_id)
-    member = _members.get(key)
-    return member is not None and member.is_active
+    return check_conversation_member(conversation_id, user_id)
 
 
 def can_edit_message(message: Message, user_id: str, is_agent: bool = False) -> bool:
@@ -276,7 +276,7 @@ async def list_messages(
     - **before**: Get messages before this timestamp (for backward pagination)
     - **after**: Get messages after this timestamp (for forward pagination)
     """
-    # Check conversation access (uses in-memory store)
+    # Check conversation access
     check_conversation_access(conversation_id, current_user.user_id)
 
     # Query messages from database
@@ -339,7 +339,7 @@ async def send_message(
     - **mentions**: List of mentioned user IDs
     - **reply_to**: Message ID being replied to
     """
-    # Check conversation access (uses in-memory store)
+    # Check conversation access
     check_conversation_access(conversation_id, current_user.user_id)
 
     # Verify reply_to message exists and is in same conversation
@@ -372,21 +372,6 @@ async def send_message(
     db.add(msg)
     await db.commit()
     await db.refresh(msg)
-    
-    # Also add to in-memory store for test compatibility
-    _messages[msg.id] = MessageStore(
-        id=msg.id,
-        conversation_id=msg.conversation_id,
-        sender_id=msg.sender_id,
-        content=msg.content,
-        content_type=msg.content_type.value if hasattr(msg.content_type, 'value') else msg.content_type,
-        metadata={},
-        mentions=[],
-        reply_to=msg.reply_to_id,
-        created_at=msg.created_at,
-        edited_at=msg.updated_at,
-        is_deleted=False,
-    )
 
     return _message_to_response(msg)
 
@@ -432,14 +417,11 @@ async def update_message(
     # Update message
     message.content = request.content
     message.updated_at = datetime.utcnow()
+    if message.edited_at is None:
+        message.edited_at = datetime.utcnow()
 
     await db.commit()
     await db.refresh(message)
-    
-    # Also update in-memory store
-    if message.id in _messages:
-        _messages[message.id].content = message.content
-        _messages[message.id].edited_at = message.updated_at
 
     return _message_to_response(message)
 
@@ -479,11 +461,6 @@ async def delete_message(
     # Soft delete
     message.is_deleted = True
     message.updated_at = datetime.utcnow()
+    message.deleted_at = datetime.utcnow()
 
     await db.commit()
-    
-    # Also update in-memory store
-    if message_id in _messages:
-        _messages[message_id].is_deleted = True
-        _messages[message_id].edited_at = message.updated_at
-        _messages[message_id].deleted_at = message.updated_at

@@ -29,11 +29,13 @@ from sprinkle.api.conversations import (
 from sprinkle.api.messages import clear_message_store
 from sprinkle.kernel.auth import UserCredentials
 from sprinkle.models import (
-    Conversation, User, Message,
-    ConversationType as DBConvType, UserType as DBUserType
+    Conversation, User, Message, ConversationMember,
+    ConversationType as DBConvType, UserType as DBUserType,
+    MemberRole as DBMemberRole
 )
 from sprinkle.storage.database import get_sync_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 from sprinkle.config import get_settings
 
 
@@ -43,7 +45,7 @@ from sprinkle.config import get_settings
 
 def _ensure_in_db(conversation_id: str, owner_id: str,
                   conv_type: str = "group", name: str = "Test"):
-    """Ensure user and conversation exist in database (sync)."""
+    """Ensure user, conversation and member exist in database (sync)."""
     engine = get_sync_engine()
     Session = sessionmaker(bind=engine)
     session = Session()
@@ -55,7 +57,7 @@ def _ensure_in_db(conversation_id: str, owner_id: str,
                 username=owner_id,
                 display_name=owner_id,
                 user_type=DBUserType.human,
-                extra_data="{}",
+                extra_data={},
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
@@ -68,11 +70,29 @@ def _ensure_in_db(conversation_id: str, owner_id: str,
                 type=DBConvType(conv_type),
                 name=name,
                 owner_id=owner_id,
-                extra_data="{}",
+                extra_data={},
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
             session.add(conv)
+        
+        # Also ensure ConversationMember exists in DB
+        from sprinkle.models.conversation_member import ConversationMember
+        existing_member = session.execute(
+            select(ConversationMember).where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.user_id == owner_id
+            )
+        ).scalar_one_or_none()
+        if existing_member is None:
+            member = ConversationMember(
+                conversation_id=conversation_id,
+                user_id=owner_id,
+                role=DBMemberRole.owner,
+                joined_at=datetime.utcnow(),
+                is_active=True,
+            )
+            session.add(member)
         
         session.commit()
     except Exception:
@@ -82,8 +102,8 @@ def _ensure_in_db(conversation_id: str, owner_id: str,
         session.close()
 
 
-def _ensure_agent_in_db(user_id: str, username: str):
-    """Ensure agent user exists in database (sync)."""
+def _ensure_agent_in_db(user_id: str, username: str, conversation_id: str = None, role: str = "member"):
+    """Ensure agent user exists in database (sync). Optionally add as conversation member."""
     engine = get_sync_engine()
     Session = sessionmaker(bind=engine)
     session = Session()
@@ -95,12 +115,31 @@ def _ensure_agent_in_db(user_id: str, username: str):
                 username=username,
                 display_name=username,
                 user_type=DBUserType.agent,
-                extra_data="{}",
+                extra_data={},
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
             session.add(user)
-            session.commit()
+        
+        # Also add as conversation member if conversation_id provided
+        if conversation_id:
+            existing_member = session.execute(
+                select(ConversationMember).where(
+                    ConversationMember.conversation_id == conversation_id,
+                    ConversationMember.user_id == user_id
+                )
+            ).scalar_one_or_none()
+            if existing_member is None:
+                member = ConversationMember(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role=DBMemberRole[role] if role in [r.name for r in DBMemberRole] else DBMemberRole.member,
+                    joined_at=datetime.utcnow(),
+                    is_active=True,
+                )
+                session.add(member)
+        
+        session.commit()
     except Exception:
         session.rollback()
         raise
@@ -186,7 +225,8 @@ async def test_send_message_persists_to_database(mock_current_user):
     """Test that sending a message persists data to the database."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    # Use same database as config and get_sync_engine()
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -240,7 +280,7 @@ async def test_list_messages_from_database(mock_current_user):
     """Test that listing messages retrieves data from the database."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -297,7 +337,7 @@ async def test_edit_message_updates_database(mock_current_user):
     """Test that editing a message updates the database."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -352,7 +392,7 @@ async def test_delete_message_soft_deletes_in_database(mock_current_user):
     """Test that deleting a message soft-deletes in the database."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -412,7 +452,7 @@ async def test_delete_message_cannot_be_deleted_again(mock_current_user):
     """Test that a soft-deleted message returns 404 on second delete."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -462,7 +502,7 @@ async def test_send_message_with_mentions(mock_current_user):
     """Test sending a message with mentions."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -511,7 +551,7 @@ async def test_send_message_with_reply(mock_current_user):
     """Test sending a message as a reply to another message."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -564,7 +604,7 @@ async def test_send_message_with_reply_wrong_conversation(mock_current_user):
     """Test that replying to a message in a different conversation fails."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -634,7 +674,7 @@ async def test_agent_cannot_edit_own_message():
         is_agent=True,
     )
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -659,7 +699,7 @@ async def test_agent_cannot_edit_own_message():
             get_conversation_store(), get_member_store(),
             conv_id, owner_uid,
         )
-        # Add agent as regular member (not owner/admin)
+        # Add agent as regular member (not owner/admin) - in-memory only for reference
         get_member_store()[(conv_id, agent_uid)] = MemberStore(
             conversation_id=conv_id,
             user_id=agent_uid,
@@ -667,7 +707,7 @@ async def test_agent_cannot_edit_own_message():
             joined_at=datetime.now(timezone.utc),
             is_active=True,
         )
-        _ensure_agent_in_db(agent_uid, agent_uid)
+        _ensure_agent_in_db(agent_uid, agent_uid, conv_id, "member")
         
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             send_resp = await client.post(
@@ -704,7 +744,7 @@ async def test_admin_can_edit_any_message(mock_current_user):
         is_agent=True,
     )
     
-    db_url = "postgresql+asyncpg://cream@localhost:5432/sprinkle_db"
+    db_url = f"postgresql+asyncpg://cream@localhost:5432/{get_settings().database.name}"
     engine = create_async_engine(db_url, pool_pre_ping=True)
     async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
@@ -738,7 +778,7 @@ async def test_admin_can_edit_any_message(mock_current_user):
             joined_at=datetime.now(timezone.utc),
             is_active=True,
         )
-        _ensure_agent_in_db(admin_user.user_id, admin_user.username)
+        _ensure_agent_in_db(admin_user.user_id, admin_user.username, conv_id, "admin")
         
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             send_resp = await client.post(

@@ -234,3 +234,59 @@ async def delete_file(
     # Delete database record
     await db.delete(file_record)
     await db.commit()
+
+
+# ============================================================================
+# Stub In-Memory Store (kept for backward compatibility with tests only)
+# ============================================================================
+# The API no longer uses these - all data goes through the database.
+# Tests may still write to these stubs but the API will not read from them.
+
+class FileStore:
+    """File data store (stub for test compatibility)."""
+    def __init__(
+        self,
+        id: str,
+        file_name: str,
+        file_size: int,
+        mime_type: str,
+        uploader_id: str,
+        conversation_id: Optional[str] = None,
+        file_path: Optional[str] = None,
+        created_at: datetime = None,
+    ):
+        self.id = id
+        self.file_name = file_name
+        self.file_size = file_size
+        self.mime_type = mime_type
+        self.uploader_id = uploader_id
+        self.conversation_id = conversation_id
+        self.file_path = file_path
+        self.created_at = created_at or datetime.now(timezone.utc)
+
+
+# Stub stores (not used by API anymore, but tests may write to them)
+_files: Dict[str, FileStore] = {}
+
+
+def get_file_store() -> Dict[str, FileStore]:
+    """Get files store (stub - not used by API, for test compatibility)."""
+    return _files
+
+
+def clear_file_store() -> None:
+    """Clear all file records (for testing).
+
+    Clears database tables.
+    """
+    from sprinkle.storage.database import SessionLocal
+    db = SessionLocal()
+    try:
+        from sprinkle.models.file import File as FileModel
+        db.query(FileModel).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
