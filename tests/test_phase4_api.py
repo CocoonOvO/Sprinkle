@@ -1744,40 +1744,69 @@ class TestFileDelete:
 class TestPermissionMatrix:
     """Tests for permission matrix from ARCHITECTURE.md."""
 
-    def test_agent_cannot_edit_own_message(self, client, auth_service):
-        """Test that regular agent cannot edit their own messages - uses real agent registration."""
+    def test_agent_member_cannot_edit_own_message(self, client, auth_service):
+        """Test that regular agent member cannot edit their own messages.
+        
+        When an agent is just a member (not owner/admin), they cannot edit their own messages.
+        But when they become owner or admin, they CAN edit their own messages.
+        """
         app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # 1. Register agent user
+        # 1. Register two users: owner and agent member
+        # Owner creates conversation
+        client.post("/api/v1/auth/register", json={
+            "username": "agent_edit_owner", "password": "password123",
+        })
+        # Agent member
         client.post("/api/v1/auth/register", json={
             "username": "agent_edit", "password": "password123", "is_agent": True,
         })
-        login_resp = client.post("/api/v1/auth/login", json={
-            "username": "agent_edit", "password": "password123",
-        })
-        token = login_resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
         
-        # 2. Create conversation and send message
+        # Owner creates conversation
+        owner_login = client.post("/api/v1/auth/login", json={
+            "username": "agent_edit_owner", "password": "password123",
+        })
+        owner_token = owner_login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
         conv_resp = client.post(
-            "/api/v1/conversations", headers=headers,
+            "/api/v1/conversations", headers=owner_headers,
             json={"type": "group", "name": "Agent Edit Test"},
         )
         assert conv_resp.status_code == 201
         conv_id = conv_resp.json()["id"]
         
+        # Owner adds agent as member
+        agent_user_resp = client.post("/api/v1/auth/login", json={
+            "username": "agent_edit", "password": "password123",
+        })
+        agent_id = agent_user_resp.json()["user_id"]
+        
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members",
+            headers=owner_headers,
+            json={"user_id": agent_id, "role": "member"},
+        )
+        
+        # Agent member sends message
+        agent_login = client.post("/api/v1/auth/login", json={
+            "username": "agent_edit", "password": "password123",
+        })
+        agent_token = agent_login.json()["access_token"]
+        agent_headers = {"Authorization": f"Bearer {agent_token}"}
+        
         msg_resp = client.post(
             f"/api/v1/conversations/{conv_id}/messages",
-            headers=headers,
+            headers=agent_headers,
             json={"content": "Agent message"},
         )
         assert msg_resp.status_code == 201
         msg_id = msg_resp.json()["id"]
         
-        # 3. Try to edit own message - should be forbidden for regular agents
+        # Agent member tries to edit own message - should be forbidden
         response = client.put(
             f"/api/v1/messages/{msg_id}",
-            headers=headers,
+            headers=agent_headers,
             json={"content": "Edited"},
         )
         

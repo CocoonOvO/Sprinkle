@@ -214,47 +214,60 @@ def is_member(conversation_id: str, user_id: str) -> bool:
 
 def can_edit_message(message: Message, user_id: str, is_agent: bool = False) -> bool:
     """Check if user can edit a message.
-
-    - Owner can edit any message
-    - Admin can edit any message
+    
+    Permission matrix:
+    - Owner can edit any message AND their own messages
+    - Admin can edit any message AND their own messages
     - Human members can edit their own messages
-    - Regular agents (role=member) cannot edit their own messages
+    - Agent members (role=member) CANNOT edit their own messages
     - Agent admins (role=admin) CAN edit their own messages
-    - Agent owners CANNOT edit their own messages (special restriction)
+    
+    This logic is aligned with PermissionService.
     """
-    # Check if sender is an agent trying to edit their own message
-    if message.sender_id == user_id and is_agent:
-        role = get_member_role(message.conversation_id, user_id)
-        # Agents with role=admin can edit their own messages
-        if role == "admin":
-            return True
-        # Agent owners cannot edit their own messages (special case)
-        if role == "owner":
-            return False
-        # Regular agents (role=member) cannot edit their own messages
-        return False
-
-    # Owner/admin can edit any message
     role = get_member_role(message.conversation_id, user_id)
+    
+    # Owner/admin can edit any message
     if role in ("owner", "admin"):
         return True
-
+    
     # Human sender can edit their own message
-    if message.sender_id == user_id:
+    if message.sender_id == user_id and not is_agent:
         return True
-
+    
+    # Agent members cannot edit their own messages (regardless of role)
+    if message.sender_id == user_id and is_agent:
+        # Agent member (role=member) - cannot edit
+        # Agent admin - already handled above
+        return False
+    
     return False
 
 
 def can_delete_message(message: Message, user_id: str, is_agent: bool = False) -> bool:
     """Check if user can delete a message.
-
-    - Owner/admin can delete any message
+    
+    Permission matrix (same as edit):
+    - Owner can delete any message AND their own messages
+    - Admin can delete any message AND their own messages
     - Human members can delete their own messages
-    - Regular agents cannot delete their own messages
+    - Agent members (role=member) CANNOT delete their own messages
+    - Agent admins (role=admin) CAN delete their own messages
     """
-    # Same rules as edit
-    return can_edit_message(message, user_id, is_agent)
+    role = get_member_role(message.conversation_id, user_id)
+    
+    # Owner/admin can delete any message
+    if role in ("owner", "admin"):
+        return True
+    
+    # Human sender can delete their own message
+    if message.sender_id == user_id and not is_agent:
+        return True
+    
+    # Agent members cannot delete their own messages
+    if message.sender_id == user_id and is_agent:
+        return False
+    
+    return False
 
 
 # ============================================================================

@@ -1501,8 +1501,12 @@ async def test_send_message_with_markdown_content_type(mock_current_user):
 
 
 @pytest.mark.asyncio
-async def test_agent_owner_cannot_edit_own_message(mock_current_user):
-    """Test that agent owner cannot edit their own message."""
+async def test_agent_owner_can_edit_own_message(mock_current_user):
+    """Test that agent owner CAN edit their own message.
+    
+    Per the unified permission matrix:
+    - Owner can edit any message AND their own messages
+    """
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     owner_uid = mock_current_user.user_id
@@ -1552,8 +1556,9 @@ async def test_agent_owner_cannot_edit_own_message(mock_current_user):
                 json={"content": "Edited"},
             )
 
-        # Agent owner cannot edit their own message
-        assert edit_resp.status_code == 403
+        # Agent owner CAN edit their own message (Owner has all permissions)
+        assert edit_resp.status_code == 200
+        assert edit_resp.json()["content"] == "Edited"
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db_session, None)
