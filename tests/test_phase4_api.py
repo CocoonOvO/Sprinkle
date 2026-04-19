@@ -1955,3 +1955,309 @@ class TestAPIIntegration:
         assert members_response.json()["total"] == 2  # owner + new_member
         
         app.dependency_overrides.clear()
+
+
+# ============================================================================
+# Phase 2 Database Persistence Tests
+# These tests verify data is actually stored in the database,
+# not just that API calls return success status codes.
+# ============================================================================
+
+class TestDatabasePersistence:
+    """Phase 2 tests: Verify data persists to database, not just API success codes."""
+
+    def test_conversation_persists_to_db(self, client, auth_service):
+        """Verify conversation is actually stored in database after creation."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Conversation
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register and create conversation
+        client.post("/api/v1/auth/register", json={
+            "username": "dbuser1", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "dbuser1", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "DB Persist Test"},
+        )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Verify conversation exists in DATABASE, not just API response
+        db = SessionLocal()
+        try:
+            conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+            assert conv is not None, "Conversation must exist in database"
+            assert conv.name == "DB Persist Test"
+            assert conv.type.value == "group"
+            assert conv.owner_id is not None
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_message_persists_to_db(self, client, auth_service):
+        """Verify message is actually stored in database after sending."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Message, Conversation, User
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Setup: create two users and a conversation
+        client.post("/api/v1/auth/register", json={
+            "username": "dbuser2", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "dbuser2", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Msg DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Send message
+        msg_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/messages", headers=headers,
+            json={"content": "Database persistence test message"},
+        )
+        assert msg_resp.status_code == 201
+        msg_id = msg_resp.json()["id"]
+        
+        # Verify message exists in DATABASE
+        db = SessionLocal()
+        try:
+            msg = db.query(Message).filter(Message.id == msg_id).first()
+            assert msg is not None, "Message must exist in database"
+            assert msg.content == "Database persistence test message"
+            assert msg.conversation_id == conv_id
+            assert msg.is_deleted == False
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_member_persists_to_db(self, client, auth_service):
+        """Verify member is actually stored in database after adding."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import ConversationMember, User
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Create owner and member users
+        client.post("/api/v1/auth/register", json={
+            "username": "dbowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "dbmember", "password": "password123",
+        })
+        
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "dbowner", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Create conversation
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Member DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Get member's user_id
+        db = SessionLocal()
+        try:
+            member_user = db.query(User).filter(User.username == "dbmember").first()
+            member_id = member_user.id
+        finally:
+            db.close()
+        
+        # Add member via API
+        add_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=headers,
+            json={"user_id": member_id, "role": "member"},
+        )
+        assert add_resp.status_code == 201
+        
+        # Verify member exists in DATABASE
+        db = SessionLocal()
+        try:
+            member = db.query(ConversationMember).filter(
+                ConversationMember.conversation_id == conv_id,
+                ConversationMember.user_id == member_id
+            ).first()
+            assert member is not None, "Member must exist in database"
+            assert member.role.value == "member"
+            assert member.is_active == True
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_message_edit_updates_db(self, client, auth_service):
+        """Verify message edit actually updates database record."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Message
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        client.post("/api/v1/auth/register", json={
+            "username": "editdbuser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "editdbuser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Edit DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Send message
+        msg_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/messages", headers=headers,
+            json={"content": "Original content"},
+        )
+        msg_id = msg_resp.json()["id"]
+        
+        # Edit message
+        edit_resp = client.put(
+            f"/api/v1/messages/{msg_id}", headers=headers,
+            json={"content": "Updated content"},
+        )
+        assert edit_resp.status_code == 200
+        
+        # Verify edit persisted in DATABASE
+        db = SessionLocal()
+        try:
+            msg = db.query(Message).filter(Message.id == msg_id).first()
+            assert msg is not None, "Message must exist in database"
+            assert msg.content == "Updated content"
+            assert msg.edited_at is not None, "edited_at should be set after edit"
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_message_soft_delete_updates_db(self, client, auth_service):
+        """Verify message soft delete actually sets is_deleted in database."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Message
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        client.post("/api/v1/auth/register", json={
+            "username": "deldbuser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "deldbuser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Delete DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Send message
+        msg_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/messages", headers=headers,
+            json={"content": "To be deleted"},
+        )
+        msg_id = msg_resp.json()["id"]
+        
+        # Delete message
+        del_resp = client.delete(f"/api/v1/messages/{msg_id}", headers=headers)
+        assert del_resp.status_code == 204
+        
+        # Verify soft delete persisted in DATABASE
+        db = SessionLocal()
+        try:
+            msg = db.query(Message).filter(Message.id == msg_id).first()
+            assert msg is not None, "Message must still exist in database (soft delete)"
+            assert msg.is_deleted == True, "is_deleted must be True"
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_file_metadata_persists_to_db(self, client, auth_service):
+        """Verify file metadata is actually stored in database after upload."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import File as FileModel
+        import io
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        client.post("/api/v1/auth/register", json={
+            "username": "filedbuser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "filedbuser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Upload file
+        file_content = b"Test file content for database persistence"
+        files = {"file": ("test_db.txt", io.BytesIO(file_content), "text/plain")}
+        upload_resp = client.post(
+            "/api/v1/files/upload", headers=headers, files=files
+        )
+        assert upload_resp.status_code == 201
+        file_id = upload_resp.json()["id"]
+        
+        # Verify file metadata exists in DATABASE
+        db = SessionLocal()
+        try:
+            file_record = db.query(FileModel).filter(FileModel.id == file_id).first()
+            assert file_record is not None, "File metadata must exist in database"
+            assert file_record.file_name == "test_db.txt"
+            assert file_record.file_size == len(file_content)
+            assert file_record.uploader_id is not None
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_user_persists_to_db(self, client, auth_service):
+        """Verify user is actually stored in database after registration."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register user
+        reg_resp = client.post("/api/v1/auth/register", json={
+            "username": "persistuser", "password": "password123",
+        })
+        assert reg_resp.status_code == 201
+        user_id = reg_resp.json()["id"]
+        
+        # Verify user exists in DATABASE
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            assert user is not None, "User must exist in database"
+            assert user.username == "persistuser"
+            assert user.user_type.value == "human"
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
