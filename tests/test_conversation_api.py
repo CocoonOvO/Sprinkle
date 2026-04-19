@@ -465,7 +465,6 @@ async def test_get_conversation_success(mock_current_user):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_get_conversation_not_member_fails(mock_current_user, mock_member_user):
     """Test that non-members cannot get a conversation."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -498,7 +497,8 @@ async def test_get_conversation_not_member_fails(mock_current_user, mock_member_
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(f"/api/v1/conversations/{conv_id}")
 
-        assert response.status_code == 403
+        # API returns 404 instead of 403 to avoid revealing if conversation exists
+        assert response.status_code == 404
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_db_session, None)
@@ -595,7 +595,6 @@ async def test_update_conversation_name(mock_current_user):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_update_conversation_metadata(mock_current_user):
     """Test updating a conversation's metadata."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -640,7 +639,6 @@ async def test_update_conversation_metadata(mock_current_user):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_update_conversation_non_admin_fails(mock_current_user, mock_member_user):
     """Test that non-admin members cannot update a conversation."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -671,14 +669,8 @@ async def test_update_conversation_non_admin_fails(mock_current_user, mock_membe
             get_conversation_store(), get_member_store(),
             conv_id, owner_user.user_id,
         )
-        # Add mock_member_user as a regular member
-        get_member_store()[(conv_id, mock_member_user.user_id)] = MemberStore(
-            conversation_id=conv_id,
-            user_id=mock_member_user.user_id,
-            role="member",
-            joined_at=datetime.now(timezone.utc),
-            is_active=True,
-        )
+        # Add mock_member_user as a regular member to database
+        _ensure_member_in_db(mock_member_user.user_id, mock_member_user.user_id, conv_id, "member")
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.put(
@@ -799,7 +791,6 @@ async def test_delete_conversation_non_owner_fails(mock_current_user, mock_membe
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_add_member_to_conversation(mock_current_user, mock_member_user):
     """Test adding a member to a conversation."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -828,6 +819,8 @@ async def test_add_member_to_conversation(mock_current_user, mock_member_user):
             get_conversation_store(), get_member_store(),
             conv_id, mock_current_user.user_id,
         )
+        # Ensure member user exists in database before adding
+        _ensure_user_in_db_only(mock_member_user.user_id)
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
@@ -894,7 +887,6 @@ async def test_add_member_invalid_role(mock_current_user, mock_member_user):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_add_member_already_member_fails(mock_current_user, mock_member_user):
     """Test that adding an already-existing member fails."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -923,6 +915,8 @@ async def test_add_member_already_member_fails(mock_current_user, mock_member_us
             get_conversation_store(), get_member_store(),
             conv_id, mock_current_user.user_id,
         )
+        # Ensure member user exists in database
+        _ensure_user_in_db_only(mock_member_user.user_id)
 
         # Add member first time
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -996,7 +990,6 @@ async def test_add_member_without_user_id_fails(mock_current_user):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_remove_member_from_conversation(mock_current_user, mock_member_user):
     """Test removing a member from a conversation."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -1025,13 +1018,8 @@ async def test_remove_member_from_conversation(mock_current_user, mock_member_us
             get_conversation_store(), get_member_store(),
             conv_id, mock_current_user.user_id,
         )
-        get_member_store()[(conv_id, mock_member_user.user_id)] = MemberStore(
-            conversation_id=conv_id,
-            user_id=mock_member_user.user_id,
-            role="member",
-            joined_at=datetime.now(timezone.utc),
-            is_active=True,
-        )
+        # Add member directly to database
+        _ensure_member_in_db(mock_member_user.user_id, mock_member_user.user_id, conv_id, "member")
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.delete(
@@ -1047,7 +1035,6 @@ async def test_remove_member_from_conversation(mock_current_user, mock_member_us
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_remove_owner_fails(mock_current_user, mock_member_user):
     """Test that removing the owner from a conversation fails."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -1078,13 +1065,8 @@ async def test_remove_owner_fails(mock_current_user, mock_member_user):
             get_conversation_store(), get_member_store(),
             conv_id, owner_user.user_id,
         )
-        get_member_store()[(conv_id, mock_member_user.user_id)] = MemberStore(
-            conversation_id=conv_id,
-            user_id=mock_member_user.user_id,
-            role="admin",
-            joined_at=datetime.now(timezone.utc),
-            is_active=True,
-        )
+        # Add admin member directly to database
+        _ensure_member_in_db(mock_member_user.user_id, mock_member_user.user_id, conv_id, "admin")
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.delete(
@@ -1581,7 +1563,6 @@ async def test_agent_owner_cannot_edit_own_message(mock_current_user):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_agent_admin_can_edit_own_message(mock_current_user):
     """Test that agent admin CAN edit their own messages."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -1619,14 +1600,8 @@ async def test_agent_admin_can_edit_own_message(mock_current_user):
             get_conversation_store(), get_member_store(),
             conv_id, owner_uid,
         )
-        # Add admin as admin (not owner)
-        get_member_store()[(conv_id, admin_uid)] = MemberStore(
-            conversation_id=conv_id,
-            user_id=admin_uid,
-            role="admin",
-            joined_at=datetime.now(timezone.utc),
-            is_active=True,
-        )
+        # Add admin as admin (not owner) - directly to database
+        _ensure_member_in_db(admin_uid, admin_uid, conv_id, "admin")
         _ensure_agent_in_db(admin_uid, admin_uid)
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
@@ -2003,7 +1978,6 @@ async def test_update_deleted_message_fails(mock_current_user):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="Needs DB fix")
 async def test_admin_can_delete_any_message(mock_current_user):
     """Test that an admin can delete any message."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -2042,13 +2016,8 @@ async def test_admin_can_delete_any_message(mock_current_user):
             get_conversation_store(), get_member_store(),
             conv_id, owner_id,
         )
-        get_member_store()[(conv_id, admin_uid)] = MemberStore(
-            conversation_id=conv_id,
-            user_id=admin_uid,
-            role="admin",
-            joined_at=datetime.now(timezone.utc),
-            is_active=True,
-        )
+        # Add admin directly to database
+        _ensure_member_in_db(admin_uid, admin_uid, conv_id, "admin")
         _ensure_agent_in_db(admin_uid, admin_uid)
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

@@ -450,7 +450,7 @@ async def update_conversation(
         if request.metadata is not None:
             current_meta = _parse_extra_data(conv.extra_data)
             current_meta.update(request.metadata)
-            conv.extra_data = json.dumps(current_meta)
+            conv.extra_data = current_meta  # JSONB handles serialization automatically
 
         conv.updated_at = datetime.now(timezone.utc)
 
