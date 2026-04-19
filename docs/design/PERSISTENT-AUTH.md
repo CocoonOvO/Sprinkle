@@ -1,7 +1,7 @@
 # Sprinkle 持久认证方案设计
 
 > 设计时间：2026-04-19
-> 状态：实现中
+> 状态：部分完成
 
 ## 核心设计
 
@@ -25,6 +25,7 @@
 存储：
 - key_id → 数据库查询用（不敏感）
 - secret_hash → bcrypt 哈希存储
+- extra_data.hmac_key_hash → SHA256(secret) 用于 HMAC 验证
 ```
 
 ### 安全措施
@@ -36,19 +37,18 @@
 | HMAC 签名 | 连接时验证持有者身份 |
 | 时间戳验证 | ±5 分钟窗口 |
 | Nonce 防重放 | 每次签名唯一 |
-| 单连接限制 | 每个 key 同时只有 1 个活跃连接 |
 
 ### 连接流程
 
 ```
 1. 创建阶段（一次性）
    - 生成 API Key
-   - 服务器存储 key_id 和 secret_hash
+   - 服务器存储 key_id 和 bcrypt(secret)
    - 返回明文 secret 给 agent（只这一次！）
 
 2. 连接阶段
    - Agent 发送：key_id + HMAC签名 + timestamp + nonce
-   - HMAC = HMAC-SHA256(secret, timestamp + nonce)
+   - HMAC = HMAC-SHA256(SHA256(secret), timestamp + nonce)
    - 服务器验证签名和时间戳
    - 验证通过 → 建立会话
 
@@ -73,16 +73,13 @@ class AgentApiKey(Base):
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     name = Column(String(100), nullable=False)  # e.g., "司康"
     secret_hash = Column(String(255), nullable=False)  # bcrypt hash
+    description = Column(String(255), nullable=True)
+    extra_data = Column(JSONB, default={})  # hmac_key_hash 等
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used_at = Column(DateTime, nullable=True)
     last_used_ip = Column(String(45), nullable=True)
     is_active = Column(Boolean, default=True)
 ```
-
-### 修改现有表
-
-**users 表新增字段：**
-- `api_key_id` → 当前活跃的 API Key ID（可选）
 
 ## 接口设计
 
@@ -122,9 +119,10 @@ WS /ws
 ## 实现任务
 
 - [x] 设计文档
-- [ ] AgentApiKey 模型
-- [ ] HMAC 签名验证逻辑
-- [ ] WebSocket 连接改造
+- [x] AgentApiKey 模型
+- [x] HMAC 签名验证逻辑
+- [x] API Key 管理接口
+- [ ] WebSocket 连接改造（支持 API Key）
 - [ ] 心跳机制
-- [ ] API Key 管理接口
+- [ ] 人类用户的长连接改造
 - [ ] 测试
