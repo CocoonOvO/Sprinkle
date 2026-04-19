@@ -212,17 +212,24 @@
 
 ## Phase 2 存储架构统一执行记录
 
-**执行时间**：2026-04-19 14:30
+**执行时间**：2026-04-19 14:30（第一阶段）+ 2026-04-19 15:20（测试修复）
 **执行者**：司康（直接执行）
-**提交**：`eaba5d8`
+**提交**：`eaba5d8` → `d226409`
 
 ### 变更文件
 
+#### 提交 eaba5d8（存储移除）
 | # | 文件 | 变更 |
 |---|------|------|
 | 1 | `src/sprinkle/api/conversations.py` | 移除 _conversations/_members 内存存储，保留 stub 返回空字典 |
 | 2 | `src/sprinkle/api/messages.py` | 移除 _messages 内存存储，保留 stub 返回空字典 |
 | 3 | `src/sprinkle/api/auth.py` | 移除 _registered_users 内存存储，保留 stub 返回空字典 |
+
+#### 提交 d226409（测试修复 + Bug修复）
+| # | 文件 | 变更 |
+|---|------|------|
+| 1 | `src/sprinkle/api/conversations.py` | 修复 extra_data JSONB 序列化问题 |
+| 2 | `tests/test_conversation_api.py` | 取消 9 个跳过的测试，修复数据库操作 |
 
 ### 架构说明
 
@@ -239,7 +246,7 @@
 ### 测试结果
 
 ```
-640 passed, 13 skipped, 2 warnings
+649 passed, 4 skipped, 2 warnings
 覆盖率: 79%
 ```
 
@@ -247,17 +254,35 @@
 
 | 测试文件 | 结果 |
 |----------|------|
-| test_conversation_api.py | 31 passed, 13 skipped |
+| test_conversation_api.py | 40 passed, 4 skipped |
 | test_api.py | 10 passed |
 | test_phase4_api.py | 49 passed |
 | test_integration.py | 45 passed |
 
-### 遗留问题
+### 取消跳过的测试（9个）
 
-- 13 个测试被标记为 `skip(reason="Needs DB fix")` - 这些需要数据库修复，但不影响核心功能
+| # | 测试 | 修复内容 |
+|---|------|----------|
+| 1 | test_get_conversation_not_member_fails | 期望 404 而非 403 |
+| 2 | test_update_conversation_metadata | JSONB bug 修复后通过 |
+| 3 | test_update_conversation_non_admin_fails | 改用 _ensure_member_in_db() |
+| 4 | test_add_member_to_conversation | 添加用户到数据库 |
+| 5 | test_add_member_already_member_fails | 添加用户到数据库 |
+| 6 | test_remove_member_from_conversation | 改用 _ensure_member_in_db() |
+| 7 | test_remove_owner_fails | 改用 _ensure_member_in_db() |
+| 8 | test_agent_admin_can_edit_own_message | 改用 _ensure_member_in_db() |
+| 9 | test_admin_can_delete_any_message | 改用 _ensure_member_in_db() |
+
+### 剩余跳过（4个）
+
+都是内部函数测试（通过集成测试覆盖）：
+- test_is_owner_true
+- test_is_admin_true_for_admin
+- test_is_member_false_not_active
+- test_check_admin_access_not_admin
 
 ---
 
 *创建时间：2026-04-17 14:12*
-*最后更新：2026-04-19 14:30*
+*最后更新：2026-04-19 15:22*
 *司康编制*
