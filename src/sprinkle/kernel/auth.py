@@ -510,12 +510,36 @@ class AuthService:
         Returns:
             UserCredentials if authenticated, None otherwise
         """
-        # Find user by username
+        # Find user by username - check memory first, then database
         user = None
+        
+        # Check in-memory cache
         for u in self._users.values():
             if u.username == username:
                 user = u
                 break
+        
+        # If not in memory, try database
+        if not user:
+            from sprinkle.models import User, UserType
+            from sprinkle.storage.database import SessionLocal
+            
+            db = SessionLocal()
+            try:
+                db_user = db.query(User).filter(User.username == username).first()
+                if db_user:
+                    user = UserCredentials(
+                        user_id=db_user.id,
+                        username=db_user.username,
+                        password_hash=db_user.password_hash,
+                        disabled=False,
+                        is_agent=db_user.user_type == UserType.agent,
+                        permissions=[],
+                    )
+                    # Cache in memory for future lookups
+                    self._users[user.user_id] = user
+            finally:
+                db.close()
         
         if not user:
             logger.warning(f"User not found: {username}")
@@ -729,7 +753,8 @@ class AuthService:
         if not token_data:
             return {"active": False}
         
-        user = self._users.get(token_data.user_id)
+        # Look up user in database for accurate info
+        user = self._get_user_by_id_from_db(token_data.user_id)
         
         return {
             "active": True,
