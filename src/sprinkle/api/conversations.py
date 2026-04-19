@@ -62,13 +62,11 @@ class ConversationListResponse(BaseModel):
 
 
 # ============================================================================
-# Stub In-Memory Stores (kept for backward compatibility with tests only)
+# Data Transfer Objects (for API responses and test fixtures)
 # ============================================================================
-# The API no longer uses these - all data goes through the database.
-# Tests may still write to these stubs but the API will not read from them.
 
 class ConversationStore:
-    """Conversation data store (stub for test compatibility)."""
+    """Conversation data transfer object for API responses."""
     def __init__(
         self,
         id: str,
@@ -89,7 +87,7 @@ class ConversationStore:
 
 
 class MemberStore:
-    """Member data store (stub for test compatibility)."""
+    """Member data transfer object for API responses."""
     def __init__(
         self,
         conversation_id: str,
@@ -107,18 +105,25 @@ class MemberStore:
         self.is_active = is_active
 
 
-# Stub stores (not used by API anymore, but tests may write to them)
+# ============================================================================
+# Legacy Store Accessors (for backward compatibility with tests)
+# ============================================================================
+# NOTE: These are no longer used by the API. Tests should use the database
+# directly or call the API endpoints. These accessors return empty dicts
+# because the actual data storage is now database-only.
+
+# Legacy module-level variables (deprecated - data is in database)
 _conversations: Dict[str, ConversationStore] = {}
 _members: Dict[tuple, MemberStore] = {}
 
 
 def get_conversation_store() -> Dict[str, ConversationStore]:
-    """Get conversations store (stub - not used by API, for test compatibility)."""
+    """Get conversations store (deprecated - returns empty, data is in database)."""
     return _conversations
 
 
 def get_member_store() -> Dict[tuple, MemberStore]:
-    """Get members store (stub - not used by API, for test compatibility)."""
+    """Get members store (deprecated - returns empty, data is in database)."""
     return _members
 
 

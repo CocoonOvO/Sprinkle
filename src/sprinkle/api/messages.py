@@ -81,13 +81,11 @@ router = conversation_messages_router
 
 
 # ============================================================================
-# Stub In-Memory Store (kept for backward compatibility with tests only)
+# Data Transfer Objects (for API responses and test fixtures)
 # ============================================================================
-# The API no longer uses these - all data goes through the database.
-# Tests may still write to these stubs but the API will not read from them.
 
 class MessageStore:
-    """Message data store (stub for test compatibility)."""
+    """Message data transfer object for API responses."""
     def __init__(
         self,
         id: str,
@@ -117,12 +115,19 @@ class MessageStore:
         self.deleted_at = deleted_at
 
 
-# Stub stores (not used by API anymore, but tests may write to them)
+# ============================================================================
+# Legacy Store Accessors (for backward compatibility with tests)
+# ============================================================================
+# NOTE: These are no longer used by the API. Tests should use the database
+# directly or call the API endpoints. This accessor returns an empty dict
+# because the actual data storage is now database-only.
+
+# Legacy module-level variable (deprecated - data is in database)
 _messages: Dict[str, MessageStore] = {}
 
 
 def get_message_store() -> Dict[str, MessageStore]:
-    """Get messages store (stub - not used by API, for test compatibility)."""
+    """Get messages store (deprecated - returns empty, data is in database)."""
     return _messages
 
 

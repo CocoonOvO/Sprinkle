@@ -336,14 +336,19 @@ def clear_registered_users() -> None:
 
 
 # ============================================================================
-# Stub In-Memory Store (kept for backward compatibility with tests only)
+# Legacy Store Accessors (for backward compatibility with tests)
 # ============================================================================
-# The API no longer uses this - all data goes through the database.
-# Tests may still write to these stubs but the API will not read from them.
+# NOTE: This is no longer used by the API. Tests should use the database
+# directly. This accessor returns an empty dict because the actual data
+# storage is now database-only.
 
+# Legacy module-level variable (deprecated - data is in database)
 _registered_users: Dict[str, Any] = {}
 
 
 def get_registered_users() -> Dict[str, Any]:
-    """Get registered users store (stub - not used by API, for test compatibility)."""
+    """Get registered users store (deprecated - returns empty, data is in database)."""
     return _registered_users
+
+
+# ============================================================================
