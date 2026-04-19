@@ -122,7 +122,7 @@ WS /ws
 - [x] AgentApiKey 模型
 - [x] HMAC 签名验证逻辑
 - [x] API Key 管理接口
-- [ ] WebSocket 连接改造（支持 API Key）
+- [x] WebSocket 连接改造（支持 API Key）
 - [ ] 心跳机制
 - [ ] 人类用户的长连接改造
 - [ ] 测试

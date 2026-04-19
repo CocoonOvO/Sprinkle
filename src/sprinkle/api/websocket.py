@@ -311,6 +311,75 @@ class WebSocketHandler:
         
         return session_id
     
+    async def handle_apikey_connection(
+        self,
+        websocket: WebSocket,
+        key_id: str,
+        signature: str,
+        timestamp: int,
+        nonce: str,
+    ) -> Optional[str]:
+        """处理 API Key 认证的 WebSocket 连接
+        
+        Args:
+            websocket: WebSocket connection
+            key_id: API Key ID
+            signature: HMAC-SHA256 signature
+            timestamp: Unix timestamp
+            nonce: Random nonce
+            
+        Returns:
+            session_id if successful, None otherwise
+        """
+        # Authenticate using API Key
+        from sprinkle.services.agent_key_service import AgentKeyService
+        from sprinkle.storage.database import get_async_session
+        
+        async with get_async_session() as db:
+            service = AgentKeyService(db)
+            result = await service.authenticate_hmac(key_id, signature, timestamp, nonce)
+            
+            if not result.success:
+                await self._send_error(websocket, ErrorCode.UNAUTHORIZED, result.message)
+                await websocket.close(code=4001)
+                return None
+            
+            user = result.user
+            api_key = result.api_key
+        
+        # Generate session and connection IDs
+        import uuid
+        session_id = f"sess_{uuid.uuid4().hex[:16]}"
+        connection_id = f"conn_{uuid.uuid4().hex[:16]}"
+        
+        # Create session
+        session = await self._session_manager.create_session(
+            session_id=session_id,
+            user_id=user.id,
+            connection_id=connection_id,
+            metadata={
+                "username": user.username,
+                "auth_type": "apikey",
+                "api_key_name": api_key.name if api_key else None,
+            },
+        )
+        
+        # Set authenticated state
+        await self._session_manager.authenticate(session_id)
+        
+        # Register connection
+        await ConnectionManager.register_websocket(session_id, websocket)
+        
+        # Start heartbeat
+        await self._session_manager.start_heartbeat(session_id)
+        
+        # Set up disconnect handler
+        session.on_disconnect = self._on_disconnect
+        
+        logger.info(f"WebSocket connected (API Key): session={session_id}, user={user.username}, key={key_id}")
+        
+        return session_id
+    
     async def _on_disconnect(self, session):
         """会话断开处理"""
         await ConnectionManager.unregister_websocket(session.session_id)
@@ -678,12 +747,24 @@ def get_ws_handler() -> WebSocketHandler:
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
+    # JWT authentication
     token: Optional[str] = Query(None),
+    # API Key authentication (for agents)
+    key_id: Optional[str] = Query(None),
+    sig: Optional[str] = Query(None),
+    ts: Optional[str] = Query(None),
+    nonce: Optional[str] = Query(None),
 ):
     """WebSocket endpoint
     
-    Query Parameters:
+    Query Parameters (JWT mode):
         token: JWT access token for authentication
+    
+    Query Parameters (API Key mode - for agents):
+        key_id: API Key ID
+        sig: HMAC-SHA256 signature
+        ts: Unix timestamp
+        nonce: Random nonce
     
     Protocol:
         - Client -> Server: JSON messages with 'type' field
@@ -691,17 +772,36 @@ async def websocket_endpoint(
     """
     await websocket.accept()
     
-    if not token:
+    handler = get_ws_handler()
+    
+    # Determine authentication mode
+    if key_id and sig and ts and nonce:
+        # API Key authentication mode
+        try:
+            timestamp = int(ts)
+        except (ValueError, TypeError):
+            await websocket.send_json({
+                "type": "error",
+                "code": ErrorCode.INVALID_PARAMS,
+                "message": "Invalid timestamp",
+            })
+            await websocket.close(code=4001)
+            return
+        
+        session_id = await handler.handle_apikey_connection(
+            websocket, key_id, sig, timestamp, nonce
+        )
+    elif token:
+        # JWT authentication mode
+        session_id = await handler.handle_connection(websocket, token)
+    else:
         await websocket.send_json({
             "type": "error",
             "code": ErrorCode.UNAUTHORIZED,
-            "message": "Token required",
+            "message": "Authentication required (token or key_id+sig+ts+nonce)",
         })
         await websocket.close(code=4001)
         return
-    
-    handler = get_ws_handler()
-    session_id = await handler.handle_connection(websocket, token)
     
     if not session_id:
         return
