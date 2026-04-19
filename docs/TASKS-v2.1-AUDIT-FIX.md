@@ -137,7 +137,7 @@
 | 1.4 数据库迁移 | subagent | 1.1,1.2,1.3 | ✅ 完成 |
 | 2.1 Conversations 存储 | 司康 | 1.4 | ✅ 完成 |
 | 2.2 Messages 存储 | 司康 | 1.4 | ✅ 完成 |
-| 2.3 Files 数据库 | subagent | 1.4 | ⏳ |
+| 2.3 Files 数据库 | ✅ 已是DB驱动 | 1.4 | ✅ 完成 |
 | 2.4 Auth 存储 | 司康 | 1.4 | ✅ 完成 |
 | 3.1 权限审查 | subagent | 2.1,2.2 | ⏳ |
 | 3.2 文档更新 | subagent | 3.1 | ⏳ |
@@ -224,6 +224,7 @@
 | 1 | `src/sprinkle/api/conversations.py` | 移除 _conversations/_members 内存存储，保留 stub 返回空字典 |
 | 2 | `src/sprinkle/api/messages.py` | 移除 _messages 内存存储，保留 stub 返回空字典 |
 | 3 | `src/sprinkle/api/auth.py` | 移除 _registered_users 内存存储，保留 stub 返回空字典 |
+| 4 | `src/sprinkle/api/files.py` | 已是数据库驱动（之前已完成），stub 保留用于测试兼容 |
 
 #### 提交 d226409（测试修复 + Bug修复）
 | # | 文件 | 变更 |
