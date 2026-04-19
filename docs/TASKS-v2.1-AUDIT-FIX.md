@@ -282,6 +282,27 @@
 - test_is_member_false_not_active
 - test_check_admin_access_not_admin
 
+### 新增：TestDatabasePersistence（7个测试）
+
+直接查询数据库验证数据持久化，不只验证状态码：
+
+| # | 测试 | 验证内容 |
+|---|------|----------|
+| 1 | test_conversation_persists_to_db | conversation 存在 DB |
+| 2 | test_message_persists_to_db | message 存在 DB |
+| 3 | test_member_persists_to_db | member 存在 DB |
+| 4 | test_message_edit_updates_db | edited_at 更新 |
+| 5 | test_message_soft_delete_updates_db | is_deleted=True |
+| 6 | test_file_metadata_persists_to_db | 文件元数据存在 DB |
+| 7 | test_user_persists_to_db | 用户注册到 DB |
+
+### 最终测试结果
+
+```
+656 passed, 4 skipped, 2 warnings
+覆盖率: 79%
+```
+
 ---
 
 *创建时间：2026-04-17 14:12*
