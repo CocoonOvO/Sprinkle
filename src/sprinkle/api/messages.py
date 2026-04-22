@@ -9,19 +9,17 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sprinkle.kernel.auth import UserCredentials
 from sprinkle.api.dependencies import get_current_user, get_db_session
 from sprinkle.api.conversations import (
-    _conversations,
-    _members,
     check_conversation_access,
     check_admin_access,
     is_owner,
     is_admin,
     get_member_role,
+    is_member as check_conversation_member,
 )
 from sprinkle.models import Message, ContentType
 from sprinkle.storage.database import SessionLocal
@@ -52,6 +50,8 @@ class MessageResponse(BaseModel):
     is_deleted: bool = False
     created_at: datetime
     edited_at: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+    deleted_by: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -81,11 +81,11 @@ router = conversation_messages_router
 
 
 # ============================================================================
-# In-Memory Message Store (kept for backwards compatibility with existing code)
+# Data Transfer Objects (for API responses and test fixtures)
 # ============================================================================
 
 class MessageStore:
-    """Message data store (for backwards compatibility)."""
+    """Message data transfer object for API responses."""
     def __init__(
         self,
         id: str,
@@ -115,22 +115,31 @@ class MessageStore:
         self.deleted_at = deleted_at
 
 
-# In-memory store (for backwards compatibility)
+# ============================================================================
+# Legacy Store Accessors (for backward compatibility with tests)
+# ============================================================================
+# NOTE: These are no longer used by the API. Tests should use the database
+# directly or call the API endpoints. This accessor returns an empty dict
+# because the actual data storage is now database-only.
+
+# Legacy module-level variable (deprecated - data is in database)
 _messages: Dict[str, MessageStore] = {}
 
 
 def get_message_store() -> Dict[str, MessageStore]:
-    """Get messages store."""
+    """Get messages store (deprecated - returns empty, data is in database)."""
     return _messages
 
+
+# ============================================================================
+# Store Management (for testing)
+# ============================================================================
 
 def clear_message_store() -> None:
     """Clear all messages (for testing).
 
-    Clears both in-memory store and database tables.
+    Clears database tables.
     """
-    _messages.clear()
-    # Also clear from database
     db = SessionLocal()
     try:
         from sprinkle.models import Message
@@ -155,12 +164,14 @@ def _message_to_response(msg: Message) -> MessageResponse:
         sender_id=msg.sender_id,
         content=msg.content,
         content_type=msg.content_type.value if isinstance(msg.content_type, ContentType) else msg.content_type,
-        metadata={},
+        metadata=msg.message_metadata or {},
         mentions=[],
         reply_to=msg.reply_to_id,
         is_deleted=msg.is_deleted,
         created_at=msg.created_at,
-        edited_at=msg.updated_at,
+        edited_at=msg.edited_at,
+        deleted_at=msg.deleted_at,
+        deleted_by=msg.deleted_by,
     )
 
 
@@ -187,7 +198,7 @@ async def check_message_access_db(db: AsyncSession, message_id: str, user_id: st
     message = await get_message_or_404_db(db, message_id)
 
     # Check if user is a member of the conversation
-    if not is_member(message.conversation_id, user_id):
+    if not check_conversation_member(message.conversation_id, user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a member of this conversation",
@@ -198,54 +209,65 @@ async def check_message_access_db(db: AsyncSession, message_id: str, user_id: st
 
 def is_member(conversation_id: str, user_id: str) -> bool:
     """Check if user is a member of the conversation."""
-    key = (conversation_id, user_id)
-    member = _members.get(key)
-    return member is not None and member.is_active
+    return check_conversation_member(conversation_id, user_id)
 
 
 def can_edit_message(message: Message, user_id: str, is_agent: bool = False) -> bool:
     """Check if user can edit a message.
-
-    - Owner can edit any message
-    - Admin can edit any message
+    
+    Permission matrix:
+    - Owner can edit any message AND their own messages
+    - Admin can edit any message AND their own messages
     - Human members can edit their own messages
-    - Regular agents (role=member) cannot edit their own messages
+    - Agent members (role=member) CANNOT edit their own messages
     - Agent admins (role=admin) CAN edit their own messages
-    - Agent owners CANNOT edit their own messages (special restriction)
+    
+    This logic is aligned with PermissionService.
     """
-    # Check if sender is an agent trying to edit their own message
-    if message.sender_id == user_id and is_agent:
-        role = get_member_role(message.conversation_id, user_id)
-        # Agents with role=admin can edit their own messages
-        if role == "admin":
-            return True
-        # Agent owners cannot edit their own messages (special case)
-        if role == "owner":
-            return False
-        # Regular agents (role=member) cannot edit their own messages
-        return False
-
-    # Owner/admin can edit any message
     role = get_member_role(message.conversation_id, user_id)
+    
+    # Owner/admin can edit any message
     if role in ("owner", "admin"):
         return True
-
+    
     # Human sender can edit their own message
-    if message.sender_id == user_id:
+    if message.sender_id == user_id and not is_agent:
         return True
-
+    
+    # Agent members cannot edit their own messages (regardless of role)
+    if message.sender_id == user_id and is_agent:
+        # Agent member (role=member) - cannot edit
+        # Agent admin - already handled above
+        return False
+    
     return False
 
 
 def can_delete_message(message: Message, user_id: str, is_agent: bool = False) -> bool:
     """Check if user can delete a message.
-
-    - Owner/admin can delete any message
+    
+    Permission matrix (same as edit):
+    - Owner can delete any message AND their own messages
+    - Admin can delete any message AND their own messages
     - Human members can delete their own messages
-    - Regular agents cannot delete their own messages
+    - Agent members (role=member) CANNOT delete their own messages
+    - Agent admins (role=admin) CAN delete their own messages
     """
-    # Same rules as edit
-    return can_edit_message(message, user_id, is_agent)
+    role = get_member_role(message.conversation_id, user_id)
+    
+    # Owner/admin can delete any message
+    if role in ("owner", "admin"):
+        return True
+    
+    # Human sender can delete their own message
+    if message.sender_id == user_id and not is_agent:
+        return True
+    
+    # Agent members cannot delete their own messages
+    if message.sender_id == user_id and is_agent:
+        return False
+    
+    return False
 
 
 # ============================================================================
@@ -272,7 +294,7 @@ async def list_messages(
     - **before**: Get messages before this timestamp (for backward pagination)
     - **after**: Get messages after this timestamp (for forward pagination)
     """
-    # Check conversation access (uses in-memory store)
+    # Check conversation access
     check_conversation_access(conversation_id, current_user.user_id)
 
     # Query messages from database
@@ -335,7 +357,7 @@ async def send_message(
     - **mentions**: List of mentioned user IDs
     - **reply_to**: Message ID being replied to
     """
-    # Check conversation access (uses in-memory store)
+    # Check conversation access
     check_conversation_access(conversation_id, current_user.user_id)
 
     # Verify reply_to message exists and is in same conversation
@@ -368,21 +390,6 @@ async def send_message(
     db.add(msg)
     await db.commit()
     await db.refresh(msg)
-    
-    # Also add to in-memory store for test compatibility
-    _messages[msg.id] = MessageStore(
-        id=msg.id,
-        conversation_id=msg.conversation_id,
-        sender_id=msg.sender_id,
-        content=msg.content,
-        content_type=msg.content_type.value if hasattr(msg.content_type, 'value') else msg.content_type,
-        metadata={},
-        mentions=[],
-        reply_to=msg.reply_to_id,
-        created_at=msg.created_at,
-        edited_at=msg.updated_at,
-        is_deleted=False,
-    )
 
     return _message_to_response(msg)
 
@@ -428,14 +435,11 @@ async def update_message(
     # Update message
     message.content = request.content
     message.updated_at = datetime.utcnow()
+    if message.edited_at is None:
+        message.edited_at = datetime.utcnow()
 
     await db.commit()
     await db.refresh(message)
-    
-    # Also update in-memory store
-    if message.id in _messages:
-        _messages[message.id].content = message.content
-        _messages[message.id].edited_at = message.updated_at
 
     return _message_to_response(message)
 
@@ -475,11 +479,6 @@ async def delete_message(
     # Soft delete
     message.is_deleted = True
     message.updated_at = datetime.utcnow()
+    message.deleted_at = datetime.utcnow()
 
     await db.commit()
-    
-    # Also update in-memory store
-    if message_id in _messages:
-        _messages[message_id].is_deleted = True
-        _messages[message_id].edited_at = message.updated_at
-        _messages[message_id].deleted_at = message.updated_at

@@ -11,6 +11,7 @@ from sprinkle.api.messages import conversation_messages_router, message_ops_rout
 from sprinkle.api.members import router as members_router
 from sprinkle.api.files import router as files_router
 from sprinkle.api.events import router as events_router
+from sprinkle.api.agent_keys import router as agent_keys_router
 
 __version__ = "0.1.0"
 
@@ -24,7 +25,8 @@ api_router.include_router(conversation_messages_router, prefix="/conversations",
 api_router.include_router(message_ops_router, prefix="/messages", tags=["messages"])
 api_router.include_router(members_router, prefix="/conversations", tags=["members"])
 api_router.include_router(files_router, prefix="/files", tags=["files"])
-api_router.include_router(events_router, tags=["events"])
+api_router.include_router(events_router, prefix="/events", tags=["events"])
+api_router.include_router(agent_keys_router, prefix="/auth", tags=["agent_keys"])
 
 # WebSocket router (separate, mounted directly on app)
 from sprinkle.api.websocket import router as websocket_router
@@ -40,4 +42,5 @@ __all__ = [
     "members_router",
     "files_router",
     "events_router",
+    "agent_keys_router",
 ]

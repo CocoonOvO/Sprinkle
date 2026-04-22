@@ -1,4 +1,4 @@
-"""Member API endpoints."""
+"""Member API endpoints - database-backed."""
 
 from __future__ import annotations
 
@@ -7,17 +7,19 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from sprinkle.kernel.auth import UserCredentials
 from sprinkle.api.dependencies import get_current_user
 from sprinkle.api.conversations import (
-    _conversations,
-    _members,
     check_conversation_access,
     check_admin_access,
     is_owner,
     is_member,
+    check_owner_access,
 )
+from sprinkle.models import Conversation, ConversationMember, MemberRole
+from sprinkle.storage.database import SessionLocal
 
 router = APIRouter()
 
@@ -55,45 +57,35 @@ class AddMemberRequest(BaseModel):
 # Helper Functions
 # ============================================================================
 
-def get_member_or_404(conversation_id: str, user_id: str) -> MemberStore:
-    """Get member or raise 404."""
-    key = (conversation_id, user_id)
-    if key not in _members:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Member not found",
-        )
-    return _members[key]
+def _get_db():
+    """Get database session."""
+    db = SessionLocal()
+    try:
+        return db
+    except Exception:
+        db.close()
+        raise
 
 
-class MemberStore:
-    """Member data store (imported from conversations)."""
-    def __init__(
-        self,
-        conversation_id: str,
-        user_id: str,
-        role: str = "member",
-        nickname: str = None,
-        joined_at: datetime = None,
-        is_active: bool = True,
-    ):
-        self.conversation_id = conversation_id
-        self.user_id = user_id
-        self.role = role
-        self.nickname = nickname
-        self.joined_at = joined_at or datetime.now(timezone.utc)
-        self.is_active = is_active
-
-
-# Re-export stores
-def get_conversation_store():
-    from sprinkle.api.conversations import _conversations
-    return _conversations
-
-
-def get_member_store():
-    from sprinkle.api.conversations import _members
-    return _members
+def _get_member_or_404_db(conversation_id: str, user_id: str) -> ConversationMember:
+    """Get member from database or raise 404."""
+    db = _get_db()
+    try:
+        member = db.execute(
+            select(ConversationMember)
+            .where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.user_id == user_id
+            )
+        ).scalar_one_or_none()
+        if member is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Member not found",
+            )
+        return member
+    finally:
+        db.close()
 
 
 # ============================================================================
@@ -109,32 +101,32 @@ async def list_members(
     conversation_id: str,
     current_user: UserCredentials = Depends(get_current_user),
 ) -> MemberListResponse:
-    """List all members of a conversation.
-    
-    - **conversation_id**: Conversation UUID
-    """
+    """List all members of a conversation."""
     # Check conversation access
     check_conversation_access(conversation_id, current_user.user_id)
-    
-    # Get active members
-    members = [
-        m for m in _members.values()
-        if m.conversation_id == conversation_id and m.is_active
-    ]
-    
-    items = [
-        MemberResponse(
-            user_id=m.user_id,
-            conversation_id=m.conversation_id,
-            role=m.role,
-            nickname=m.nickname,
-            joined_at=m.joined_at,
-            is_active=m.is_active,
-        )
-        for m in members
-    ]
-    
-    return MemberListResponse(items=items, total=len(items))
+
+    db = _get_db()
+    try:
+        members = db.execute(
+            select(ConversationMember)
+            .where(ConversationMember.conversation_id == conversation_id)
+        ).scalars().all()
+
+        items = [
+            MemberResponse(
+                user_id=m.user_id,
+                conversation_id=m.conversation_id,
+                role=m.role.value if hasattr(m.role, 'value') else m.role,
+                nickname=m.nickname,
+                joined_at=m.joined_at,
+                is_active=True,
+            )
+            for m in members
+        ]
+
+        return MemberListResponse(items=items, total=len(items))
+    finally:
+        db.close()
 
 
 @router.post(
@@ -149,66 +141,78 @@ async def add_member(
     current_user: UserCredentials = Depends(get_current_user),
 ) -> MemberResponse:
     """Add a member to a conversation.
-    
+
     Only admin or owner can add members.
-    
-    - **conversation_id**: Conversation UUID
-    - **user_id**: User ID to add
-    - **role**: Member role (admin/member)
     """
     # Check admin access
     check_admin_access(conversation_id, current_user.user_id)
-    
-    # Check if conversation exists
-    if conversation_id not in _conversations:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found",
+
+    db = _get_db()
+    try:
+        # Check if conversation exists
+        conv = db.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        ).scalar_one_or_none()
+        if conv is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found",
+            )
+
+        # Cannot add owner as a non-owner
+        if request.user_id == conv.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot add owner as a member",
+            )
+
+        # Cannot set role to owner
+        if request.role == "owner":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot set role to owner",
+            )
+
+        # Check if user is already a member
+        existing = db.execute(
+            select(ConversationMember)
+            .where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.user_id == request.user_id
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User is already a member",
+            )
+
+        now = datetime.now(timezone.utc)
+        member = ConversationMember(
+            conversation_id=conversation_id,
+            user_id=request.user_id,
+            role=MemberRole(request.role),
+            nickname=request.nickname,
+            invited_by=current_user.user_id,
+            joined_at=now,
+            is_active=True,
         )
-    
-    # Check if user is already a member
-    key = (conversation_id, request.user_id)
-    if key in _members and _members[key].is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User is already a member",
+        db.add(member)
+        db.commit()
+        db.refresh(member)
+
+        return MemberResponse(
+            user_id=member.user_id,
+            conversation_id=member.conversation_id,
+            role=member.role.value if hasattr(member.role, 'value') else member.role,
+            nickname=member.nickname,
+            joined_at=member.joined_at,
+            is_active=True,
         )
-    
-    # Cannot add owner as a non-owner
-    conv = _conversations[conversation_id]
-    if request.user_id == conv.owner_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot add owner as a member",
-        )
-    
-    # Cannot set role to owner
-    if request.role == "owner":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot set role to owner",
-        )
-    
-    # Create member
-    now = datetime.now(timezone.utc)
-    member = MemberStore(
-        conversation_id=conversation_id,
-        user_id=request.user_id,
-        role=request.role,
-        nickname=request.nickname,
-        joined_at=now,
-        is_active=True,
-    )
-    _members[key] = member
-    
-    return MemberResponse(
-        user_id=member.user_id,
-        conversation_id=member.conversation_id,
-        role=member.role,
-        nickname=member.nickname,
-        joined_at=member.joined_at,
-        is_active=member.is_active,
-    )
+    except HTTPException:
+        raise
+    finally:
+        db.close()
 
 
 @router.delete(
@@ -222,41 +226,52 @@ async def remove_member(
     current_user: UserCredentials = Depends(get_current_user),
 ) -> None:
     """Remove a member from a conversation.
-    
+
     Only admin or owner can remove members.
     Owner cannot be removed.
-    
-    - **conversation_id**: Conversation UUID
-    - **user_id**: User ID to remove
     """
     # Check admin access
     check_admin_access(conversation_id, current_user.user_id)
-    
-    # Check if conversation exists
-    if conversation_id not in _conversations:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found",
-        )
-    
-    # Cannot remove owner
-    conv = _conversations[conversation_id]
-    if user_id == conv.owner_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot remove owner from conversation",
-        )
-    
-    # Check if member exists
-    key = (conversation_id, user_id)
-    if key not in _members or not _members[key].is_active:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Member not found",
-        )
-    
-    # Soft delete (set is_active to False)
-    _members[key].is_active = False
+
+    db = _get_db()
+    try:
+        # Check if conversation exists
+        conv = db.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        ).scalar_one_or_none()
+        if conv is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found",
+            )
+
+        # Cannot remove owner
+        if user_id == conv.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove owner from conversation",
+            )
+
+        # Check if member exists
+        member = db.execute(
+            select(ConversationMember)
+            .where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.user_id == user_id
+            )
+        ).scalar_one_or_none()
+        if member is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Member not found",
+            )
+
+        db.delete(member)
+        db.commit()
+    except HTTPException:
+        raise
+    finally:
+        db.close()
 
 
 class UpdateMemberRoleRequest(BaseModel):
@@ -276,64 +291,59 @@ async def update_member(
     current_user: UserCredentials = Depends(get_current_user),
 ) -> MemberResponse:
     """Update a member's role in a conversation.
-    
+
     Only owner can update roles.
-    
-    - **conversation_id**: Conversation UUID
-    - **user_id**: User ID to update
-    - **role**: New role (admin/member)
     """
     # Check owner access
     check_owner_access(conversation_id, current_user.user_id)
-    
-    # Check if conversation exists
-    if conversation_id not in _conversations:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found",
-        )
-    
-    # Cannot change owner's role
-    conv = _conversations[conversation_id]
-    if user_id == conv.owner_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot change owner's role",
-        )
-    
-    # Check if member exists
-    key = (conversation_id, user_id)
-    if key not in _members or not _members[key].is_active:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Member not found",
-        )
-    
-    # Update role
-    _members[key].role = request.role
-    
-    member = _members[key]
-    return MemberResponse(
-        user_id=member.user_id,
-        conversation_id=member.conversation_id,
-        role=member.role,
-        nickname=member.nickname,
-        joined_at=member.joined_at,
-        is_active=member.is_active,
-    )
 
+    db = _get_db()
+    try:
+        # Check if conversation exists
+        conv = db.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        ).scalar_one_or_none()
+        if conv is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found",
+            )
 
-def check_owner_access(conversation_id: str, user_id: str) -> None:
-    """Check if user is the owner of the conversation."""
-    if conversation_id not in _conversations:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Conversation not found",
+        # Cannot change owner's role
+        if user_id == conv.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot change owner's role",
+            )
+
+        # Check if member exists
+        member = db.execute(
+            select(ConversationMember)
+            .where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.user_id == user_id
+            )
+        ).scalar_one_or_none()
+        if member is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Member not found",
+            )
+
+        # Update role
+        member.role = MemberRole(request.role)
+        db.commit()
+        db.refresh(member)
+
+        return MemberResponse(
+            user_id=member.user_id,
+            conversation_id=member.conversation_id,
+            role=member.role.value if hasattr(member.role, 'value') else member.role,
+            nickname=member.nickname,
+            joined_at=member.joined_at,
+            is_active=True,
         )
-    
-    conv = _conversations[conversation_id]
-    if conv.owner_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Owner permission required",
-        )
+    except HTTPException:
+        raise
+    finally:
+        db.close()

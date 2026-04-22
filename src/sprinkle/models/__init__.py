@@ -7,6 +7,8 @@ from .user import User, UserType
 from .conversation import Conversation, ConversationType
 from .message import Message, ContentType
 from .conversation_member import ConversationMember, MemberRole
+from .file import File
+from .agent_api_key import AgentApiKey
 
 __all__ = [
     "Base",
@@ -18,4 +20,6 @@ __all__ = [
     "ContentType",
     "ConversationMember",
     "MemberRole",
+    "File",
+    "AgentApiKey",
 ]

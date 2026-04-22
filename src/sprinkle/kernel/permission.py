@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Set
 
+from sqlalchemy import select
+
 from sprinkle.kernel.auth import UserCredentials
 
 logger = logging.getLogger(__name__)
@@ -221,17 +223,91 @@ class PermissionService:
         self._agent_cache[user_id] = is_agent
     
     def is_user_agent(self, user_id: str) -> bool:
-        """Check if a user is an agent."""
-        return self._agent_cache.get(user_id, False)
+        """Check if a user is an agent (from cache or database)."""
+        # Check cache first
+        if user_id in self._agent_cache:
+            return self._agent_cache.get(user_id, False)
+        
+        # Fetch from database
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        
+        db = SessionLocal()
+        try:
+            user = db.execute(
+                select(User).where(User.id == user_id)
+            ).scalar_one_or_none()
+            
+            if not user:
+                return False
+            
+            is_agent = user.user_type.value == "agent"
+            self._agent_cache[user_id] = is_agent
+            return is_agent
+        finally:
+            db.close()
     
     def get_member_info(
         self,
         conversation_id: str,
         user_id: str,
     ) -> Optional[MemberInfo]:
-        """Get cached member info."""
+        """Get member info from cache or database.
+        
+        If not in cache, fetches from database and caches the result.
+        """
         key = (conversation_id, user_id)
-        return self._member_cache.get(key)
+        
+        # Check cache first
+        if key in self._member_cache:
+            return self._member_cache.get(key)
+        
+        # Fetch from database
+        member_info = self._fetch_member_from_db(conversation_id, user_id)
+        
+        if member_info:
+            self._member_cache[key] = member_info
+        
+        return member_info
+    
+    def _fetch_member_from_db(
+        self,
+        conversation_id: str,
+        user_id: str,
+    ) -> Optional[MemberInfo]:
+        """Fetch member info from database."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import ConversationMember, Conversation, User
+        
+        db = SessionLocal()
+        try:
+            # Get member record
+            member = db.execute(
+                select(ConversationMember).where(
+                    ConversationMember.conversation_id == conversation_id,
+                    ConversationMember.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            
+            if not member:
+                return None
+            
+            # Get user to check if agent
+            user = db.execute(
+                select(User).where(User.id == user_id)
+            ).scalar_one_or_none()
+            
+            is_agent = user.user_type.value == "agent" if user else False
+            
+            return MemberInfo(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role=Role(member.role.value),
+                is_agent=is_agent,
+                is_active=member.is_active,
+            )
+        finally:
+            db.close()
     
     def set_member_info(self, info: MemberInfo) -> None:
         """Set cached member info."""
