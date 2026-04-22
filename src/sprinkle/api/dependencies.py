@@ -110,3 +110,11 @@ async def get_db_session():
     """Get database session (placeholder for future integration)."""
     async for session in get_async_session():
         yield session
+
+
+def get_authorization_header(request: Request) -> Optional[str]:
+    """Get Authorization header from request.
+    
+    This is a proper dependency function that can be used with FastAPI Depends.
+    """
+    return request.headers.get("Authorization", "")

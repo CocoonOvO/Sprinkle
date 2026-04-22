@@ -429,6 +429,8 @@ class AuthService:
     ) -> Optional[UserCredentials]:
         """Register a new user.
         
+        Writes to both in-memory cache AND database for consistency.
+        
         Args:
             username: Username (must be unique)
             password: Plain text password
@@ -438,32 +440,61 @@ class AuthService:
         Returns:
             UserCredentials if registered, None if username exists
         """
-        # Check if username exists
-        for user in self._users.values():
-            if user.username == username:
-                logger.warning(f"Username already exists: {username}")
+        # Check if username exists (check both in-memory and database)
+        from sprinkle.models import User, UserType
+        from sprinkle.storage.database import SessionLocal
+        
+        db = SessionLocal()
+        try:
+            # Check database
+            existing = db.query(User).filter(User.username == username).first()
+            if existing:
+                logger.warning(f"Username already exists in DB: {username}")
                 return None
-        
-        # Generate user ID
-        if not user_id:
-            import uuid
-            user_id = str(uuid.uuid4())
-        
-        # Hash password
-        password_hash = self.hash_password(password)
-        
-        # Create user
-        user = UserCredentials(
-            user_id=user_id,
-            username=username,
-            password_hash=password_hash,
-            is_agent=is_agent,
-        )
-        
-        self._users[user_id] = user
-        
-        logger.info(f"User registered: {username} (id: {user_id})")
-        return user
+            
+            # Also check in-memory
+            for user in self._users.values():
+                if user.username == username:
+                    logger.warning(f"Username already exists in memory: {username}")
+                    return None
+            
+            # Generate user ID
+            if not user_id:
+                import uuid
+                user_id = str(uuid.uuid4())
+            
+            # Hash password
+            password_hash = self.hash_password(password)
+            
+            # Create user in database
+            db_user = User(
+                id=user_id,
+                username=username,
+                password_hash=password_hash,
+                display_name=username,
+                user_type=UserType.agent if is_agent else UserType.human,
+                extra_data={},
+            )
+            db.add(db_user)
+            db.commit()
+            
+            # Create user credentials for in-memory cache
+            user = UserCredentials(
+                user_id=user_id,
+                username=username,
+                password_hash=password_hash,
+                is_agent=is_agent,
+            )
+            
+            self._users[user_id] = user
+            
+            logger.info(f"User registered: {username} (id: {user_id})")
+            return user
+        except Exception as e:
+            db.rollback()
+            raise e
+        finally:
+            db.close()
     
     async def authenticate(
         self,
@@ -479,12 +510,36 @@ class AuthService:
         Returns:
             UserCredentials if authenticated, None otherwise
         """
-        # Find user by username
+        # Find user by username - check memory first, then database
         user = None
+        
+        # Check in-memory cache
         for u in self._users.values():
             if u.username == username:
                 user = u
                 break
+        
+        # If not in memory, try database
+        if not user:
+            from sprinkle.models import User, UserType
+            from sprinkle.storage.database import SessionLocal
+            
+            db = SessionLocal()
+            try:
+                db_user = db.query(User).filter(User.username == username).first()
+                if db_user:
+                    user = UserCredentials(
+                        user_id=db_user.id,
+                        username=db_user.username,
+                        password_hash=db_user.password_hash,
+                        disabled=False,
+                        is_agent=db_user.user_type == UserType.agent,
+                        permissions=[],
+                    )
+                    # Cache in memory for future lookups
+                    self._users[user.user_id] = user
+            finally:
+                db.close()
         
         if not user:
             logger.warning(f"User not found: {username}")
@@ -519,7 +574,8 @@ class AuthService:
         if not token_data:
             return None
         
-        user = self._users.get(token_data.user_id)
+        # Look up user in database instead of in-memory dict
+        user = self._get_user_by_id_from_db(token_data.user_id)
         if not user:
             return None
         
@@ -527,6 +583,35 @@ class AuthService:
             return None
         
         return user
+    
+    def _get_user_by_id_from_db(self, user_id: str) -> Optional[UserCredentials]:
+        """Get user by ID from database.
+        
+        Args:
+            user_id: User identifier
+            
+        Returns:
+            UserCredentials if found, None otherwise
+        """
+        from sprinkle.models import User, UserType
+        from sprinkle.storage.database import SessionLocal
+        
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                return None
+            
+            return UserCredentials(
+                user_id=user.id,
+                username=user.username,
+                password_hash=user.password_hash,
+                disabled=False,  # We check disabled status separately
+                is_agent=user.user_type == UserType.agent,
+                permissions=[],  # Permissions are not stored per-user
+            )
+        finally:
+            db.close()
     
     async def get_user(self, user_id: str) -> Optional[UserCredentials]:
         """Get user by ID.
@@ -668,7 +753,8 @@ class AuthService:
         if not token_data:
             return {"active": False}
         
-        user = self._users.get(token_data.user_id)
+        # Look up user in database for accurate info
+        user = self._get_user_by_id_from_db(token_data.user_id)
         
         return {
             "active": True,

@@ -171,7 +171,7 @@ def create_user(
             password_hash=hash_password(password),
             display_name=display_name,
             user_type=UserType.agent if is_agent else UserType.human,
-            extra_data="{}",
+            extra_data={},
         )
         db.add(user)
         db.commit()
@@ -310,31 +310,15 @@ async def refresh_token(request: RefreshRequest, auth_service: AuthService = Dep
     )
 
 
-# ============================================================================
-# In-Memory User Store (legacy, kept for backward compatibility with tests)
-# ============================================================================
-
-# Store for registered users: user_id -> UserCredentials
-_registered_users: Dict[str, Any] = {}
-
-
-def get_registered_users() -> Dict[str, Any]:
-    """Get the registered users store."""
-    return _registered_users
-
-
 def clear_registered_users() -> None:
     """Clear all registered users (for testing).
 
-    Clears both in-memory store and database tables.
-    Deletes in correct order to respect foreign key constraints:
+    Clears database tables in correct order to respect foreign key constraints:
     1. conversation_members (references users)
     2. messages (references users as sender)
     3. conversations (references users as owner)
     4. users
     """
-    _registered_users.clear()
-    # Also clear from database in correct order to respect foreign keys
     db = SessionLocal()
     try:
         from sprinkle.models import User, ConversationMember, Message, Conversation
@@ -349,3 +333,22 @@ def clear_registered_users() -> None:
         raise
     finally:
         db.close()
+
+
+# ============================================================================
+# Legacy Store Accessors (for backward compatibility with tests)
+# ============================================================================
+# NOTE: This is no longer used by the API. Tests should use the database
+# directly. This accessor returns an empty dict because the actual data
+# storage is now database-only.
+
+# Legacy module-level variable (deprecated - data is in database)
+_registered_users: Dict[str, Any] = {}
+
+
+def get_registered_users() -> Dict[str, Any]:
+    """Get registered users store (deprecated - returns empty, data is in database)."""
+    return _registered_users
+
+
+# ============================================================================

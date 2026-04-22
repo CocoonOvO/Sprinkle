@@ -137,7 +137,8 @@ async def update_me(
             except Exception:
                 pass
             current_extra.update(request.metadata)
-            user.extra_data = json.dumps(current_extra)
+            # Pass dict directly - SQLAlchemy will handle JSON serialization
+            user.extra_data = current_extra
         
         user.updated_at = datetime.utcnow()
         

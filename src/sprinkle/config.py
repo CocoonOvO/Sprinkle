@@ -77,19 +77,56 @@ class Settings(BaseSettings):
 # ============================================================================
 
 def load_yaml_config(config_path: Optional[str] = None) -> dict:
-    """Load configuration from YAML file."""
+    """Load configuration from YAML file.
+    
+    If config.yaml does not exist but config.yaml.example does,
+    automatically generate config.yaml from the example.
+    """
     if config_path is None:
-        # Look for config.yaml in common locations
         config_path = os.environ.get(
             "SPRINKLE_CONFIG_PATH",
             str(Path(__file__).parent.parent.parent / "config.yaml")
         )
     
     config_file = Path(config_path)
+    
+    # Auto-generate config.yaml from example if it doesn't exist
+    if not config_file.exists():
+        example_file = config_file.with_suffix(".yaml.example")
+        if example_file.exists():
+            _generate_config_from_example(example_file, config_file)
+        else:
+            return {}
+    
     if config_file.exists():
         with open(config_file, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
+
+
+def _generate_config_from_example(example_file: Path, target_file: Path) -> None:
+    """Generate config.yaml from example file.
+    
+    Replaces CHANGE_ME placeholders with safe default values.
+    """
+    with open(example_file, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    
+    # Replace CHANGE_ME placeholders with appropriate defaults
+    if "database" in config:
+        if config["database"].get("user") == "CHANGE_ME":
+            config["database"]["user"] = "cream"
+        if config["database"].get("password") == "CHANGE_ME":
+            config["database"]["password"] = ""
+    
+    if "kernel" in config and "auth" in config["kernel"]:
+        if config["kernel"]["auth"].get("secret_key") == "CHANGE_ME":
+            import secrets
+            config["kernel"]["auth"]["secret_key"] = secrets.token_hex(32)
+    
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(target_file, "w", encoding="utf-8") as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
 
 def get_settings(config_path: Optional[str] = None) -> Settings:

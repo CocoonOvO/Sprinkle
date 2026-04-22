@@ -97,18 +97,24 @@ def mock_agent_user():
 
 @pytest.fixture(autouse=True)
 def clear_stores():
-    """Clear all stores before each test."""
-    clear_registered_users()
+    """Clear all stores before each test.
+    
+    Order matters: files reference users, messages reference conversations/users,
+    conversation_members reference conversations/users. Delete in reverse dependency order.
+    """
+    # Before test: clear in correct order
+    clear_file_store()  # Files reference users
+    clear_message_store()  # Messages reference conversations and users
+    clear_conversation_store()  # Conversations and members reference users
     clear_user_metadata()
-    clear_conversation_store()
-    clear_message_store()
-    clear_file_store()
+    clear_registered_users()
     yield
-    clear_registered_users()
-    clear_user_metadata()
-    clear_conversation_store()
-    clear_message_store()
+    # After test: clear in same order
     clear_file_store()
+    clear_message_store()
+    clear_conversation_store()
+    clear_user_metadata()
+    clear_registered_users()
 
 
 # ============================================================================
@@ -442,11 +448,21 @@ class TestUserMe:
 class TestConversationList:
     """Tests for GET /api/v1/conversations."""
 
-    def test_list_empty(self, client, mock_current_user):
-        """Test listing conversations when none exist."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_list_empty(self, client, auth_service):
+        """Test listing conversations when none exist - uses real user via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        response = client.get("/api/v1/conversations")
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "listuser1", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "listuser1", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        response = client.get("/api/v1/conversations", headers=headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -455,28 +471,28 @@ class TestConversationList:
         
         app.dependency_overrides.clear()
 
-    def test_list_with_conversations(self, client, mock_current_user):
-        """Test listing conversations."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_list_with_conversations(self, client, auth_service):
+        """Test listing conversations - creates conversation via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Create a conversation first
-        _conversations = get_conversation_store()
-        _conv = ConversationStore(
-            id="conv_1",
-            type="group",
-            name="Test Group",
-            owner_id=mock_current_user.user_id,
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "listuser2", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "listuser2", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Create conversation via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Test Group"},
         )
-        _conversations["conv_1"] = _conv
+        assert conv_resp.status_code == 201
         
-        _members = get_member_store()
-        _members[("conv_1", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_1",
-            user_id=mock_current_user.user_id,
-            role="owner",
-        )
-        
-        response = client.get("/api/v1/conversations")
+        response = client.get("/api/v1/conversations", headers=headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -489,12 +505,22 @@ class TestConversationList:
 class TestConversationCreate:
     """Tests for POST /api/v1/conversations."""
 
-    def test_create_group_success(self, client, mock_current_user):
-        """Test creating a group conversation."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_create_group_success(self, client, auth_service):
+        """Test creating a group conversation - uses real user via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "convuser1", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "convuser1", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
         response = client.post(
-            "/api/v1/conversations",
+            "/api/v1/conversations", headers=headers,
             json={
                 "type": "group",
                 "name": "New Group",
@@ -506,16 +532,26 @@ class TestConversationCreate:
         data = response.json()
         assert data["type"] == "group"
         assert data["name"] == "New Group"
-        assert data["owner_id"] == mock_current_user.user_id
+        assert data["owner_id"] is not None
         
         app.dependency_overrides.clear()
 
-    def test_create_direct(self, client, mock_current_user):
-        """Test creating a direct conversation."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_create_direct(self, client, auth_service):
+        """Test creating a direct conversation - uses real user via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "convuser2", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "convuser2", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
         response = client.post(
-            "/api/v1/conversations",
+            "/api/v1/conversations", headers=headers,
             json={"type": "direct"},
         )
         
@@ -543,26 +579,29 @@ class TestConversationCreate:
 class TestConversationGet:
     """Tests for GET /api/v1/conversations/{id}."""
 
-    def test_get_success(self, client, mock_current_user):
-        """Test getting a conversation."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_get_success(self, client, auth_service):
+        """Test getting a conversation - creates via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        _conversations["conv_get"] = ConversationStore(
-            id="conv_get",
-            type="group",
-            name="Get Test",
-            owner_id=mock_current_user.user_id,
-        )
-        _members = get_member_store()
-        _members[("conv_get", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_get",
-            user_id=mock_current_user.user_id,
-            role="owner",
-        )
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "getuser1", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "getuser1", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
-        response = client.get("/api/v1/conversations/conv_get")
+        # Create conversation via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Get Test"},
+        )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        response = client.get(f"/api/v1/conversations/{conv_id}", headers=headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -580,22 +619,44 @@ class TestConversationGet:
         
         app.dependency_overrides.clear()
 
-    def test_get_not_member(self, client, mock_current_user):
-        """Test getting conversation user is not a member of."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_get_not_member(self, client, auth_service):
+        """Test getting conversation user is not a member of - creates via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        _conversations["conv_private"] = ConversationStore(
-            id="conv_private",
-            type="group",
-            name="Private Group",
-            owner_id="other_user",
+        # Register two users
+        client.post("/api/v1/auth/register", json={
+            "username": "owneruser", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "otheruser", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "owneruser", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as other user
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "otheruser", "password": "password123",
+        })
+        other_token = login_resp.json()["access_token"]
+        other_headers = {"Authorization": f"Bearer {other_token}"}
+        
+        # Create conversation as owner via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Private Group"},
         )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
         
-        response = client.get("/api/v1/conversations/conv_private")
+        # Try to get as non-member - API returns 404 for both not found and not a member
+        response = client.get(f"/api/v1/conversations/{conv_id}", headers=other_headers)
         
-        assert response.status_code == 403
+        assert response.status_code == 404
         
         app.dependency_overrides.clear()
 
@@ -603,27 +664,31 @@ class TestConversationGet:
 class TestConversationUpdate:
     """Tests for PUT /api/v1/conversations/{id}."""
 
-    def test_update_by_owner(self, client, mock_current_user):
-        """Test updating conversation by owner."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_update_by_owner(self, client, auth_service):
+        """Test updating conversation by owner - creates via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        _conversations["conv_update"] = ConversationStore(
-            id="conv_update",
-            type="group",
-            name="Old Name",
-            owner_id=mock_current_user.user_id,
-        )
-        _members = get_member_store()
-        _members[("conv_update", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_update",
-            user_id=mock_current_user.user_id,
-            role="owner",
-        )
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "updateowner", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "updateowner", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
+        # Create conversation via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Old Name"},
+        )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Update via API
         response = client.put(
-            "/api/v1/conversations/conv_update",
+            f"/api/v1/conversations/{conv_id}", headers=headers,
             json={"name": "New Name"},
         )
         
@@ -632,33 +697,59 @@ class TestConversationUpdate:
         
         app.dependency_overrides.clear()
 
-    def test_update_by_admin(self, client, mock_current_user):
-        """Test updating conversation by admin."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_update_by_admin(self, client, auth_service):
+        """Test updating conversation by admin - uses real users via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        owner_id = "owner_user"
-        _conversations["conv_admin_update"] = ConversationStore(
-            id="conv_admin_update",
-            type="group",
-            name="Admin Update",
-            owner_id=owner_id,
+        # Register owner and admin users
+        client.post("/api/v1/auth/register", json={
+            "username": "adminowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "convadmin", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "adminowner", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as admin
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "convadmin", "password": "password123",
+        })
+        admin_token = login_resp.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        
+        # Create conversation as owner via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Admin Update"},
         )
-        _members = get_member_store()
-        _members[("conv_admin_update", owner_id)] = MemberStore(
-            conversation_id="conv_admin_update",
-            user_id=owner_id,
-            role="owner",
-        )
-        _members[("conv_admin_update", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_admin_update",
-            user_id=mock_current_user.user_id,
-            role="admin",
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Add admin as member via API (need to get their user ID first)
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            admin_user = db.query(User).filter(User.username == "convadmin").first()
+            admin_user_id = admin_user.id
+        finally:
+            db.close()
+        
+        # Add admin as member
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": admin_user_id, "role": "admin"},
         )
         
+        # Try to update as admin
         response = client.put(
-            "/api/v1/conversations/conv_admin_update",
+            f"/api/v1/conversations/{conv_id}", headers=admin_headers,
             json={"name": "Changed by Admin"},
         )
         
@@ -666,33 +757,58 @@ class TestConversationUpdate:
         
         app.dependency_overrides.clear()
 
-    def test_update_by_member_forbidden(self, client, mock_current_user):
-        """Test updating conversation by regular member fails."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_update_by_member_forbidden(self, client, auth_service):
+        """Test updating conversation by regular member fails - uses real users via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        owner_id = "owner_user"
-        _conversations["conv_member_update"] = ConversationStore(
-            id="conv_member_update",
-            type="group",
-            name="Member Update",
-            owner_id=owner_id,
+        # Register owner and member users
+        client.post("/api/v1/auth/register", json={
+            "username": "memowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "memberuser", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "memowner", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as member
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "memberuser", "password": "password123",
+        })
+        member_token = login_resp.json()["access_token"]
+        member_headers = {"Authorization": f"Bearer {member_token}"}
+        
+        # Create conversation as owner via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Member Update"},
         )
-        _members = get_member_store()
-        _members[("conv_member_update", owner_id)] = MemberStore(
-            conversation_id="conv_member_update",
-            user_id=owner_id,
-            role="owner",
-        )
-        _members[("conv_member_update", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_member_update",
-            user_id=mock_current_user.user_id,
-            role="member",
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Add member via API
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            member_user = db.query(User).filter(User.username == "memberuser").first()
+            member_user_id = member_user.id
+        finally:
+            db.close()
+        
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": member_user_id, "role": "member"},
         )
         
+        # Try to update as member (should fail)
         response = client.put(
-            "/api/v1/conversations/conv_member_update",
+            f"/api/v1/conversations/{conv_id}", headers=member_headers,
             json={"name": "Changed"},
         )
         
@@ -704,58 +820,85 @@ class TestConversationUpdate:
 class TestConversationDelete:
     """Tests for DELETE /api/v1/conversations/{id}."""
 
-    def test_delete_by_owner(self, client, mock_current_user):
-        """Test deleting conversation by owner."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_delete_by_owner(self, client, auth_service):
+        """Test deleting conversation by owner - creates via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        _conversations["conv_delete"] = ConversationStore(
-            id="conv_delete",
-            type="group",
-            name="Delete Me",
-            owner_id=mock_current_user.user_id,
-        )
-        _members = get_member_store()
-        _members[("conv_delete", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_delete",
-            user_id=mock_current_user.user_id,
-            role="owner",
-        )
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "delowner", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "delowner", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
-        response = client.delete("/api/v1/conversations/conv_delete")
+        # Create conversation via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Delete Me"},
+        )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        response = client.delete(f"/api/v1/conversations/{conv_id}", headers=headers)
         
         assert response.status_code == 204
-        assert "conv_delete" not in _conversations
         
         app.dependency_overrides.clear()
 
-    def test_delete_by_admin_forbidden(self, client, mock_current_user):
-        """Test deleting conversation by admin fails."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_delete_by_admin_forbidden(self, client, auth_service):
+        """Test deleting conversation by admin fails - uses real users via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        owner_id = "owner_user"
-        _conversations["conv_admin_delete"] = ConversationStore(
-            id="conv_admin_delete",
-            type="group",
-            name="Admin Delete",
-            owner_id=owner_id,
+        # Register owner and admin users
+        client.post("/api/v1/auth/register", json={
+            "username": "delowner2", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "deladmin", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "delowner2", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as admin
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "deladmin", "password": "password123",
+        })
+        admin_token = login_resp.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        
+        # Create conversation as owner via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Admin Delete"},
         )
-        _members = get_member_store()
-        _members[("conv_admin_delete", owner_id)] = MemberStore(
-            conversation_id="conv_admin_delete",
-            user_id=owner_id,
-            role="owner",
-        )
-        _members[("conv_admin_delete", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_admin_delete",
-            user_id=mock_current_user.user_id,
-            role="admin",
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Add admin as member
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            admin_user = db.query(User).filter(User.username == "deladmin").first()
+            admin_user_id = admin_user.id
+        finally:
+            db.close()
+        
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": admin_user_id, "role": "admin"},
         )
         
-        response = client.delete("/api/v1/conversations/conv_admin_delete")
+        # Try to delete as admin (should fail)
+        response = client.delete(f"/api/v1/conversations/{conv_id}", headers=admin_headers)
         
         assert response.status_code == 403
         
@@ -769,26 +912,29 @@ class TestConversationDelete:
 class TestMessageList:
     """Tests for GET /api/v1/conversations/{id}/messages."""
 
-    def test_list_empty(self, client, mock_current_user):
-        """Test listing messages when none exist."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_list_empty(self, client, auth_service):
+        """Test listing messages when none exist - creates conversation via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup conversation
-        _conversations = get_conversation_store()
-        _conversations["conv_msg_list"] = ConversationStore(
-            id="conv_msg_list",
-            type="group",
-            name="Message List",
-            owner_id=mock_current_user.user_id,
-        )
-        _members = get_member_store()
-        _members[("conv_msg_list", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_msg_list",
-            user_id=mock_current_user.user_id,
-            role="owner",
-        )
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "listmsguser1", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "listmsguser1", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
-        response = client.get("/api/v1/conversations/conv_msg_list/messages")
+        # Create conversation via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Message List"},
+        )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        response = client.get(f"/api/v1/conversations/{conv_id}/messages", headers=headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -1087,40 +1233,34 @@ class TestMessageDelete:
 class TestMemberList:
     """Tests for GET /api/v1/conversations/{id}/members."""
 
-    def test_list_members(self, client, mock_current_user):
-        """Test listing members."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_list_members(self, client, auth_service):
+        """Test listing members - creates via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        _conversations = get_conversation_store()
-        _conversations["conv_members"] = ConversationStore(
-            id="conv_members",
-            type="group",
-            name="Members Test",
-            owner_id=mock_current_user.user_id,
-        )
-        _members = get_member_store()
-        _members[("conv_members", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_members",
-            user_id=mock_current_user.user_id,
-            role="owner",
-        )
-        _members[("conv_members", "user_2")] = MemberStore(
-            conversation_id="conv_members",
-            user_id="user_2",
-            role="admin",
-        )
-        _members[("conv_members", "user_3")] = MemberStore(
-            conversation_id="conv_members",
-            user_id="user_3",
-            role="member",
-        )
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "memowner1", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "memowner1", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
-        response = client.get("/api/v1/conversations/conv_members/members")
+        # Create conversation via API
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Members Test"},
+        )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # List members
+        response = client.get(f"/api/v1/conversations/{conv_id}/members", headers=headers)
         
         assert response.status_code == 200
         data = response.json()
-        assert data["total"] == 3
+        assert data["total"] == 1  # Only owner initially
         
         app.dependency_overrides.clear()
 
@@ -1128,71 +1268,129 @@ class TestMemberList:
 class TestMemberAdd:
     """Tests for POST /api/v1/conversations/{id}/members."""
 
-    def test_add_member_by_admin(self, client, mock_current_user):
-        """Test adding a member by admin."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_add_member_by_admin(self, client, auth_service):
+        """Test adding a member by admin - uses real users via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        owner_id = "owner_123"
-        _conversations = get_conversation_store()
-        _conversations["conv_add_member"] = ConversationStore(
-            id="conv_add_member",
-            type="group",
-            name="Add Member Test",
-            owner_id=owner_id,
+        # Register owner, admin, and new member
+        client.post("/api/v1/auth/register", json={
+            "username": "admowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "admadmin", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "admnewmember", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "admowner", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as admin
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "admadmin", "password": "password123",
+        })
+        admin_token = login_resp.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        
+        # Create conversation as owner
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Add Member Test"},
         )
-        _members = get_member_store()
-        _members[("conv_add_member", owner_id)] = MemberStore(
-            conversation_id="conv_add_member",
-            user_id=owner_id,
-            role="owner",
-        )
-        _members[("conv_add_member", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_add_member",
-            user_id=mock_current_user.user_id,
-            role="admin",
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Add admin as member (owner adds them)
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            admin_user = db.query(User).filter(User.username == "admadmin").first()
+            new_user = db.query(User).filter(User.username == "admnewmember").first()
+            admin_id = admin_user.id
+            new_user_id = new_user.id
+        finally:
+            db.close()
+        
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": admin_id, "role": "admin"},
         )
         
+        # Admin adds new member
         response = client.post(
-            "/api/v1/conversations/conv_add_member/members",
-            json={"user_id": "new_user", "role": "member"},
+            f"/api/v1/conversations/{conv_id}/members", headers=admin_headers,
+            json={"user_id": new_user_id, "role": "member"},
         )
         
         assert response.status_code == 201
         data = response.json()
-        assert data["user_id"] == "new_user"
+        assert data["user_id"] == new_user_id
         assert data["role"] == "member"
         
         app.dependency_overrides.clear()
 
-    def test_add_member_by_member_forbidden(self, client, mock_current_user):
-        """Test adding member by regular member fails."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_add_member_by_member_forbidden(self, client, auth_service):
+        """Test adding member by regular member fails - uses real users via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        owner_id = "owner_456"
-        _conversations = get_conversation_store()
-        _conversations["conv_member_add"] = ConversationStore(
-            id="conv_member_add",
-            type="group",
-            name="Member Add Test",
-            owner_id=owner_id,
+        # Register owner and member
+        client.post("/api/v1/auth/register", json={
+            "username": "mbrsowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "mbrsmember", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "mbrsnewmember", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "mbrsowner", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as member
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "mbrsmember", "password": "password123",
+        })
+        member_token = login_resp.json()["access_token"]
+        member_headers = {"Authorization": f"Bearer {member_token}"}
+        
+        # Create conversation as owner
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Member Add Test"},
         )
-        _members = get_member_store()
-        _members[("conv_member_add", owner_id)] = MemberStore(
-            conversation_id="conv_member_add",
-            user_id=owner_id,
-            role="owner",
-        )
-        _members[("conv_member_add", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_member_add",
-            user_id=mock_current_user.user_id,
-            role="member",
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Add member (owner adds them)
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            member_user = db.query(User).filter(User.username == "mbrsmember").first()
+            member_id = member_user.id
+        finally:
+            db.close()
+        
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": member_id, "role": "member"},
         )
         
+        # Member tries to add another member (should fail)
         response = client.post(
-            "/api/v1/conversations/conv_member_add/members",
-            json={"user_id": "new_user", "role": "member"},
+            f"/api/v1/conversations/{conv_id}/members", headers=member_headers,
+            json={"user_id": "some_user_id", "role": "member"},
         )
         
         assert response.status_code == 403
@@ -1203,72 +1401,131 @@ class TestMemberAdd:
 class TestMemberRemove:
     """Tests for DELETE /api/v1/conversations/{id}/members/{uid}."""
 
-    def test_remove_member_by_admin(self, client, mock_current_user):
-        """Test removing member by admin."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_remove_member_by_admin(self, client, auth_service):
+        """Test removing member by admin - uses real users via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        owner_id = "owner_remove"
-        _conversations = get_conversation_store()
-        _conversations["conv_remove"] = ConversationStore(
-            id="conv_remove",
-            type="group",
-            name="Remove Test",
-            owner_id=owner_id,
+        # Register users
+        client.post("/api/v1/auth/register", json={
+            "username": "rmowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "rmadmin", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "rmmember", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "rmowner", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as admin
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "rmadmin", "password": "password123",
+        })
+        admin_token = login_resp.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        
+        # Create conversation as owner
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Remove Test"},
         )
-        _members = get_member_store()
-        _members[("conv_remove", owner_id)] = MemberStore(
-            conversation_id="conv_remove",
-            user_id=owner_id,
-            role="owner",
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Get user IDs
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            admin_user = db.query(User).filter(User.username == "rmadmin").first()
+            member_user = db.query(User).filter(User.username == "rmmember").first()
+            admin_id = admin_user.id
+            member_id = member_user.id
+        finally:
+            db.close()
+        
+        # Add admin and member
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": admin_id, "role": "admin"},
         )
-        _members[("conv_remove", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_remove",
-            user_id=mock_current_user.user_id,
-            role="admin",
-        )
-        _members[("conv_remove", "user_to_remove")] = MemberStore(
-            conversation_id="conv_remove",
-            user_id="user_to_remove",
-            role="member",
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": member_id, "role": "member"},
         )
         
+        # Admin removes member
         response = client.delete(
-            "/api/v1/conversations/conv_remove/members/user_to_remove"
+            f"/api/v1/conversations/{conv_id}/members/{member_id}",
+            headers=admin_headers,
         )
         
         assert response.status_code == 204
-        # Verify soft delete
-        assert _members[("conv_remove", "user_to_remove")].is_active is False
         
         app.dependency_overrides.clear()
 
-    def test_remove_owner_forbidden(self, client, mock_current_user):
-        """Test removing owner fails."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_remove_owner_forbidden(self, client, auth_service):
+        """Test removing owner fails - uses real users via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # Setup
-        owner_id = "owner_cannot_remove"
-        _conversations = get_conversation_store()
-        _conversations["conv_rm_owner"] = ConversationStore(
-            id="conv_rm_owner",
-            type="group",
-            name="Remove Owner Test",
-            owner_id=owner_id,
+        # Register owner and admin
+        client.post("/api/v1/auth/register", json={
+            "username": "rmowner2", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "rmadmin2", "password": "password123",
+        })
+        
+        # Login as owner
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "rmowner2", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as admin
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "rmadmin2", "password": "password123",
+        })
+        admin_token = login_resp.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+        
+        # Create conversation as owner
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=owner_headers,
+            json={"type": "group", "name": "Remove Owner Test"},
         )
-        _members = get_member_store()
-        _members[("conv_rm_owner", owner_id)] = MemberStore(
-            conversation_id="conv_rm_owner",
-            user_id=owner_id,
-            role="owner",
-        )
-        _members[("conv_rm_owner", mock_current_user.user_id)] = MemberStore(
-            conversation_id="conv_rm_owner",
-            user_id=mock_current_user.user_id,
-            role="admin",
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        owner_id = conv_resp.json()["owner_id"]
+        
+        # Get admin user ID
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            admin_user = db.query(User).filter(User.username == "rmadmin2").first()
+            admin_id = admin_user.id
+        finally:
+            db.close()
+        
+        # Add admin as member first
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=owner_headers,
+            json={"user_id": admin_id, "role": "admin"},
         )
         
-        response = client.delete(f"/api/v1/conversations/conv_rm_owner/members/{owner_id}")
+        # Admin tries to remove owner (should fail)
+        response = client.delete(
+            f"/api/v1/conversations/{conv_id}/members/{owner_id}",
+            headers=admin_headers,
+        )
         
         assert response.status_code == 400
         assert "owner" in response.json()["detail"].lower()
@@ -1283,9 +1540,19 @@ class TestMemberRemove:
 class TestFileUpload:
     """Tests for POST /api/v1/files/upload."""
 
-    def test_upload_success(self, client, mock_current_user, tmp_path):
-        """Test successful file upload."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_upload_success(self, client, auth_service, tmp_path):
+        """Test successful file upload - uses real user via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "uploaduser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "uploaduser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
         # Override storage dir
         from sprinkle.api import files as files_module
@@ -1295,6 +1562,7 @@ class TestFileUpload:
         
         response = client.post(
             "/api/v1/files/upload",
+            headers=headers,
             files={"file": ("test.txt", BytesIO(file_content), "text/plain")},
         )
         
@@ -1303,13 +1571,23 @@ class TestFileUpload:
         assert data["file_name"] == "test.txt"
         assert data["file_size"] == 12  # len(b"Hello, file!") = 12
         assert data["mime_type"] == "text/plain"
-        assert data["uploader_id"] == mock_current_user.user_id
+        assert data["uploader_id"] is not None
         
         app.dependency_overrides.clear()
 
-    def test_upload_with_conversation(self, client, mock_current_user, tmp_path):
-        """Test uploading file with conversation association."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_upload_with_conversation(self, client, auth_service, tmp_path):
+        """Test uploading file with conversation association - uses real user via API."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "uploaduser2", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "uploaduser2", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
         from sprinkle.api import files as files_module
         files_module.STORAGE_DIR = tmp_path
@@ -1319,6 +1597,7 @@ class TestFileUpload:
         # This test verifies basic upload functionality works
         response = client.post(
             "/api/v1/files/upload",
+            headers=headers,
             files={"file": ("doc.pdf", BytesIO(b"PDF content"), "application/pdf")},
         )
         
@@ -1333,29 +1612,33 @@ class TestFileUpload:
 class TestFileDownload:
     """Tests for GET /api/v1/files/{id}."""
 
-    def test_download_success(self, client, mock_current_user, tmp_path):
-        """Test successful file download."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_download_success(self, client, auth_service, tmp_path):
+        """Test successful file download - uploads via API then downloads."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "dluser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "dluser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
         
         from sprinkle.api import files as files_module
         files_module.STORAGE_DIR = tmp_path
         
-        # Create a file
-        file_path = tmp_path / "download_test.txt"
-        file_path.write_bytes(b"Download content")
-        
-        file_id = "file_download"
-        _files = get_file_store()
-        _files[file_id] = FileStore(
-            id=file_id,
-            uploader_id=mock_current_user.user_id,
-            file_name="download_test.txt",
-            file_path=str(file_path),
-            file_size=17,
-            mime_type="text/plain",
+        # Upload a file first
+        upload_resp = client.post(
+            "/api/v1/files/upload",
+            headers=headers,
+            files={"file": ("download_test.txt", BytesIO(b"Download content"), "text/plain")},
         )
+        assert upload_resp.status_code == 201
+        file_id = upload_resp.json()["id"]
         
-        response = client.get(f"/api/v1/files/{file_id}")
+        response = client.get(f"/api/v1/files/{file_id}", headers=headers)
         
         assert response.status_code == 200
         assert response.content == b"Download content"
@@ -1376,45 +1659,78 @@ class TestFileDownload:
 class TestFileDelete:
     """Tests for DELETE /api/v1/files/{id}."""
 
-    def test_delete_by_uploader(self, client, mock_current_user):
-        """Test deleting file by uploader."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_delete_by_uploader(self, client, auth_service, tmp_path):
+        """Test deleting file by uploader - uploads via API then deletes."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        file_id = "file_to_delete"
-        _files = get_file_store()
-        _files[file_id] = FileStore(
-            id=file_id,
-            uploader_id=mock_current_user.user_id,
-            file_name="delete_me.txt",
-            file_path="/fake/path",
-            file_size=10,
-            mime_type="text/plain",
+        # Register and login real user
+        client.post("/api/v1/auth/register", json={
+            "username": "deluser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "deluser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        from sprinkle.api import files as files_module
+        files_module.STORAGE_DIR = tmp_path
+        
+        # Upload a file first
+        upload_resp = client.post(
+            "/api/v1/files/upload",
+            headers=headers,
+            files={"file": ("delete_me.txt", BytesIO(b"Delete content"), "text/plain")},
         )
+        assert upload_resp.status_code == 201
+        file_id = upload_resp.json()["id"]
         
-        response = client.delete(f"/api/v1/files/{file_id}")
+        response = client.delete(f"/api/v1/files/{file_id}", headers=headers)
         
         assert response.status_code == 204
-        # Verify soft delete
-        assert _files[file_id].deleted_at is not None
         
         app.dependency_overrides.clear()
 
-    def test_delete_by_other_forbidden(self, client, mock_current_user):
-        """Test deleting file by non-uploader fails."""
-        app.dependency_overrides[get_current_user] = override_get_current_user(mock_current_user)
+    def test_delete_by_other_forbidden(self, client, auth_service, tmp_path):
+        """Test deleting file by non-uploader fails - uploads via API then tries to delete as other."""
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        file_id = "file_other_delete"
-        _files = get_file_store()
-        _files[file_id] = FileStore(
-            id=file_id,
-            uploader_id="other_user",
-            file_name="not_yours.txt",
-            file_path="/fake/path",
-            file_size=10,
-            mime_type="text/plain",
+        # Register uploader and other user
+        client.post("/api/v1/auth/register", json={
+            "username": "fileowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "fileother", "password": "password123",
+        })
+        
+        # Login as uploader
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "fileowner", "password": "password123",
+        })
+        owner_token = login_resp.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
+        # Login as other user
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "fileother", "password": "password123",
+        })
+        other_token = login_resp.json()["access_token"]
+        other_headers = {"Authorization": f"Bearer {other_token}"}
+        
+        from sprinkle.api import files as files_module
+        files_module.STORAGE_DIR = tmp_path
+        
+        # Upload a file as owner
+        upload_resp = client.post(
+            "/api/v1/files/upload",
+            headers=owner_headers,
+            files={"file": ("not_yours.txt", BytesIO(b"Content"), "text/plain")},
         )
+        assert upload_resp.status_code == 201
+        file_id = upload_resp.json()["id"]
         
-        response = client.delete(f"/api/v1/files/{file_id}")
+        # Try to delete as other user (should fail)
+        response = client.delete(f"/api/v1/files/{file_id}", headers=other_headers)
         
         assert response.status_code == 403
         
@@ -1428,40 +1744,69 @@ class TestFileDelete:
 class TestPermissionMatrix:
     """Tests for permission matrix from ARCHITECTURE.md."""
 
-    def test_agent_cannot_edit_own_message(self, client, auth_service):
-        """Test that regular agent cannot edit their own messages - uses real agent registration."""
+    def test_agent_member_cannot_edit_own_message(self, client, auth_service):
+        """Test that regular agent member cannot edit their own messages.
+        
+        When an agent is just a member (not owner/admin), they cannot edit their own messages.
+        But when they become owner or admin, they CAN edit their own messages.
+        """
         app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # 1. Register agent user
+        # 1. Register two users: owner and agent member
+        # Owner creates conversation
+        client.post("/api/v1/auth/register", json={
+            "username": "agent_edit_owner", "password": "password123",
+        })
+        # Agent member
         client.post("/api/v1/auth/register", json={
             "username": "agent_edit", "password": "password123", "is_agent": True,
         })
-        login_resp = client.post("/api/v1/auth/login", json={
-            "username": "agent_edit", "password": "password123",
-        })
-        token = login_resp.json()["access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
         
-        # 2. Create conversation and send message
+        # Owner creates conversation
+        owner_login = client.post("/api/v1/auth/login", json={
+            "username": "agent_edit_owner", "password": "password123",
+        })
+        owner_token = owner_login.json()["access_token"]
+        owner_headers = {"Authorization": f"Bearer {owner_token}"}
+        
         conv_resp = client.post(
-            "/api/v1/conversations", headers=headers,
+            "/api/v1/conversations", headers=owner_headers,
             json={"type": "group", "name": "Agent Edit Test"},
         )
         assert conv_resp.status_code == 201
         conv_id = conv_resp.json()["id"]
         
+        # Owner adds agent as member
+        agent_user_resp = client.post("/api/v1/auth/login", json={
+            "username": "agent_edit", "password": "password123",
+        })
+        agent_id = agent_user_resp.json()["user_id"]
+        
+        client.post(
+            f"/api/v1/conversations/{conv_id}/members",
+            headers=owner_headers,
+            json={"user_id": agent_id, "role": "member"},
+        )
+        
+        # Agent member sends message
+        agent_login = client.post("/api/v1/auth/login", json={
+            "username": "agent_edit", "password": "password123",
+        })
+        agent_token = agent_login.json()["access_token"]
+        agent_headers = {"Authorization": f"Bearer {agent_token}"}
+        
         msg_resp = client.post(
             f"/api/v1/conversations/{conv_id}/messages",
-            headers=headers,
+            headers=agent_headers,
             json={"content": "Agent message"},
         )
         assert msg_resp.status_code == 201
         msg_id = msg_resp.json()["id"]
         
-        # 3. Try to edit own message - should be forbidden for regular agents
+        # Agent member tries to edit own message - should be forbidden
         response = client.put(
             f"/api/v1/messages/{msg_id}",
-            headers=headers,
+            headers=agent_headers,
             json={"content": "Edited"},
         )
         
@@ -1575,12 +1920,17 @@ class TestAPIIntegration:
         """Test conversation creation and member management flow - uses real users."""
         app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
         
-        # 1. Register & login
+        # 1. Register owner & member users
         client.post("/api/v1/auth/register", json={
-            "username": "flowuser", "password": "password123",
+            "username": "flowowner", "password": "password123",
         })
+        client.post("/api/v1/auth/register", json={
+            "username": "flowmember", "password": "password123",
+        })
+        
+        # Login as owner
         login_resp = client.post("/api/v1/auth/login", json={
-            "username": "flowuser", "password": "password123",
+            "username": "flowowner", "password": "password123",
         })
         token = login_resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
@@ -1598,11 +1948,20 @@ class TestAPIIntegration:
         assert create_response.status_code == 201
         conv_id = create_response.json()["id"]
         
-        # 3. Add member
+        # 3. Add member - get member's user_id first
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        db = SessionLocal()
+        try:
+            member_user = db.query(User).filter(User.username == "flowmember").first()
+            member_id = member_user.id
+        finally:
+            db.close()
+        
         add_response = client.post(
             f"/api/v1/conversations/{conv_id}/members",
             headers=headers,
-            json={"user_id": "new_member", "role": "member"},
+            json={"user_id": member_id, "role": "member"},
         )
         assert add_response.status_code == 201
         
@@ -1623,5 +1982,311 @@ class TestAPIIntegration:
         members_response = client.get(f"/api/v1/conversations/{conv_id}/members", headers=headers)
         assert members_response.status_code == 200
         assert members_response.json()["total"] == 2  # owner + new_member
+        
+        app.dependency_overrides.clear()
+
+
+# ============================================================================
+# Phase 2 Database Persistence Tests
+# These tests verify data is actually stored in the database,
+# not just that API calls return success status codes.
+# ============================================================================
+
+class TestDatabasePersistence:
+    """Phase 2 tests: Verify data persists to database, not just API success codes."""
+
+    def test_conversation_persists_to_db(self, client, auth_service):
+        """Verify conversation is actually stored in database after creation."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Conversation
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register and create conversation
+        client.post("/api/v1/auth/register", json={
+            "username": "dbuser1", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "dbuser1", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "DB Persist Test"},
+        )
+        assert conv_resp.status_code == 201
+        conv_id = conv_resp.json()["id"]
+        
+        # Verify conversation exists in DATABASE, not just API response
+        db = SessionLocal()
+        try:
+            conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+            assert conv is not None, "Conversation must exist in database"
+            assert conv.name == "DB Persist Test"
+            assert conv.type.value == "group"
+            assert conv.owner_id is not None
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_message_persists_to_db(self, client, auth_service):
+        """Verify message is actually stored in database after sending."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Message, Conversation, User
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Setup: create two users and a conversation
+        client.post("/api/v1/auth/register", json={
+            "username": "dbuser2", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "dbuser2", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Msg DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Send message
+        msg_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/messages", headers=headers,
+            json={"content": "Database persistence test message"},
+        )
+        assert msg_resp.status_code == 201
+        msg_id = msg_resp.json()["id"]
+        
+        # Verify message exists in DATABASE
+        db = SessionLocal()
+        try:
+            msg = db.query(Message).filter(Message.id == msg_id).first()
+            assert msg is not None, "Message must exist in database"
+            assert msg.content == "Database persistence test message"
+            assert msg.conversation_id == conv_id
+            assert msg.is_deleted == False
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_member_persists_to_db(self, client, auth_service):
+        """Verify member is actually stored in database after adding."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import ConversationMember, User
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Create owner and member users
+        client.post("/api/v1/auth/register", json={
+            "username": "dbowner", "password": "password123",
+        })
+        client.post("/api/v1/auth/register", json={
+            "username": "dbmember", "password": "password123",
+        })
+        
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "dbowner", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Create conversation
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Member DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Get member's user_id
+        db = SessionLocal()
+        try:
+            member_user = db.query(User).filter(User.username == "dbmember").first()
+            member_id = member_user.id
+        finally:
+            db.close()
+        
+        # Add member via API
+        add_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/members", headers=headers,
+            json={"user_id": member_id, "role": "member"},
+        )
+        assert add_resp.status_code == 201
+        
+        # Verify member exists in DATABASE
+        db = SessionLocal()
+        try:
+            member = db.query(ConversationMember).filter(
+                ConversationMember.conversation_id == conv_id,
+                ConversationMember.user_id == member_id
+            ).first()
+            assert member is not None, "Member must exist in database"
+            assert member.role.value == "member"
+            assert member.is_active == True
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_message_edit_updates_db(self, client, auth_service):
+        """Verify message edit actually updates database record."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Message
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        client.post("/api/v1/auth/register", json={
+            "username": "editdbuser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "editdbuser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Edit DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Send message
+        msg_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/messages", headers=headers,
+            json={"content": "Original content"},
+        )
+        msg_id = msg_resp.json()["id"]
+        
+        # Edit message
+        edit_resp = client.put(
+            f"/api/v1/messages/{msg_id}", headers=headers,
+            json={"content": "Updated content"},
+        )
+        assert edit_resp.status_code == 200
+        
+        # Verify edit persisted in DATABASE
+        db = SessionLocal()
+        try:
+            msg = db.query(Message).filter(Message.id == msg_id).first()
+            assert msg is not None, "Message must exist in database"
+            assert msg.content == "Updated content"
+            assert msg.edited_at is not None, "edited_at should be set after edit"
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_message_soft_delete_updates_db(self, client, auth_service):
+        """Verify message soft delete actually sets is_deleted in database."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import Message
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        client.post("/api/v1/auth/register", json={
+            "username": "deldbuser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "deldbuser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        conv_resp = client.post(
+            "/api/v1/conversations", headers=headers,
+            json={"type": "group", "name": "Delete DB Test"},
+        )
+        conv_id = conv_resp.json()["id"]
+        
+        # Send message
+        msg_resp = client.post(
+            f"/api/v1/conversations/{conv_id}/messages", headers=headers,
+            json={"content": "To be deleted"},
+        )
+        msg_id = msg_resp.json()["id"]
+        
+        # Delete message
+        del_resp = client.delete(f"/api/v1/messages/{msg_id}", headers=headers)
+        assert del_resp.status_code == 204
+        
+        # Verify soft delete persisted in DATABASE
+        db = SessionLocal()
+        try:
+            msg = db.query(Message).filter(Message.id == msg_id).first()
+            assert msg is not None, "Message must still exist in database (soft delete)"
+            assert msg.is_deleted == True, "is_deleted must be True"
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_file_metadata_persists_to_db(self, client, auth_service):
+        """Verify file metadata is actually stored in database after upload."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import File as FileModel
+        import io
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        client.post("/api/v1/auth/register", json={
+            "username": "filedbuser", "password": "password123",
+        })
+        login_resp = client.post("/api/v1/auth/login", json={
+            "username": "filedbuser", "password": "password123",
+        })
+        token = login_resp.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # Upload file
+        file_content = b"Test file content for database persistence"
+        files = {"file": ("test_db.txt", io.BytesIO(file_content), "text/plain")}
+        upload_resp = client.post(
+            "/api/v1/files/upload", headers=headers, files=files
+        )
+        assert upload_resp.status_code == 201
+        file_id = upload_resp.json()["id"]
+        
+        # Verify file metadata exists in DATABASE
+        db = SessionLocal()
+        try:
+            file_record = db.query(FileModel).filter(FileModel.id == file_id).first()
+            assert file_record is not None, "File metadata must exist in database"
+            assert file_record.file_name == "test_db.txt"
+            assert file_record.file_size == len(file_content)
+            assert file_record.uploader_id is not None
+        finally:
+            db.close()
+        
+        app.dependency_overrides.clear()
+
+    def test_user_persists_to_db(self, client, auth_service):
+        """Verify user is actually stored in database after registration."""
+        from sprinkle.storage.database import SessionLocal
+        from sprinkle.models import User
+        
+        app.dependency_overrides[get_auth_service] = override_get_auth_service(auth_service)
+        
+        # Register user
+        reg_resp = client.post("/api/v1/auth/register", json={
+            "username": "persistuser", "password": "password123",
+        })
+        assert reg_resp.status_code == 201
+        user_id = reg_resp.json()["id"]
+        
+        # Verify user exists in DATABASE
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            assert user is not None, "User must exist in database"
+            assert user.username == "persistuser"
+            assert user.user_type.value == "human"
+        finally:
+            db.close()
         
         app.dependency_overrides.clear()

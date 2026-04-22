@@ -17,6 +17,7 @@ from typing import (
 )
 
 from fastapi import APIRouter, Depends, Query, Request
+from sprinkle.api.dependencies import get_authorization_header
 from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
@@ -227,10 +228,10 @@ async def sse_heartbeat(queue: asyncio.Queue):
 # SSE Endpoint
 # ============================================================================
 
-@router.get("/api/v1/events")
+@router.get("")
 async def events_endpoint(
     request: Request,
-    Authorization: str = Depends(lambda: request.headers.get("Authorization")),
+    Authorization: Optional[str] = Depends(get_authorization_header),
     Last_Event_ID: Optional[str] = Query(None, alias="Last-Event-ID"),
 ):
     """SSE 端点 - 服务端推送事件
@@ -367,11 +368,11 @@ async def events_endpoint(
 # Subscription Management
 # ============================================================================
 
-@router.post("/api/v1/events/subscribe")
+@router.post("/subscribe")
 async def subscribe_to_conversation(
     request: Request,
     conversation_id: str,
-    Authorization: str = Depends(lambda: request.headers.get("Authorization")),
+    Authorization: Optional[str] = Depends(get_authorization_header),
 ):
     """订阅会话事件
     
@@ -411,11 +412,11 @@ async def subscribe_to_conversation(
     }
 
 
-@router.post("/api/v1/events/unsubscribe")
+@router.post("/unsubscribe")
 async def unsubscribe_from_conversation(
     request: Request,
     conversation_id: str,
-    Authorization: str = Depends(lambda: request.headers.get("Authorization")),
+    Authorization: Optional[str] = Depends(get_authorization_header),
 ):
     """取消订阅会话事件"""
     if not Authorization:
