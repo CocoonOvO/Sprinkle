@@ -331,12 +331,45 @@ class LayeredStorageService:
     async def _save_message_to_postgres(self, message: MessageRecord) -> None:
         """Save message to PostgreSQL.
         
-        Note: This is a placeholder for actual DB implementation.
-        In production, this would insert into the messages table.
+        Args:
+            message: The message record to save
         """
-        # TODO: Implement actual PostgreSQL write
-        # For now, just log
-        logger.debug(f"Would save message {message.id} to PostgreSQL")
+        from sprinkle.models.message import Message, ContentType
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            logger.warning("No DB session available for saving message to PostgreSQL")
+            return
+        
+        # Check if message already exists
+        result = await db.execute(
+            select(Message).where(Message.id == message.id)
+        )
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            # Update existing message
+            existing.content = message.content
+            existing.content_type = ContentType(message.content_type)
+            existing.updated_at = datetime.now(timezone.utc)
+        else:
+            # Insert new message
+            msg = Message(
+                id=message.id,
+                conversation_id=message.conversation_id,
+                sender_id=message.sender_id,
+                content=message.content,
+                content_type=ContentType(message.content_type),
+                reply_to_id=message.reply_to,
+                is_deleted=message.is_deleted,
+                created_at=message.created_at or datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            db.add(msg)
+        
+        await db.commit()
+        logger.debug(f"Saved message {message.id} to PostgreSQL")
     
     async def get_message(self, message_id: str) -> Optional[MessageRecord]:
         """Get a single message by ID.
@@ -368,11 +401,39 @@ class LayeredStorageService:
     ) -> Optional[MessageRecord]:
         """Get message from PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            message_id: The message ID
+        
+        Returns:
+            MessageRecord if found, None otherwise
         """
-        # TODO: Implement actual PostgreSQL read
-        logger.debug(f"Would get message {message_id} from PostgreSQL")
-        return None
+        from sprinkle.models.message import Message
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            return None
+        
+        result = await db.execute(
+            select(Message).where(Message.id == message_id)
+        )
+        msg = result.scalar_one_or_none()
+        
+        if msg is None:
+            return None
+        
+        return MessageRecord(
+            id=msg.id,
+            conversation_id=msg.conversation_id,
+            sender_id=msg.sender_id,
+            content=msg.content,
+            content_type=msg.content_type.value if hasattr(msg.content_type, 'value') else msg.content_type,
+            reply_to=msg.reply_to_id,
+            is_deleted=msg.is_deleted,
+            created_at=msg.created_at,
+            edited_at=msg.updated_at,
+            deleted_at=None,
+        )
     
     async def get_conversation_messages(
         self,
@@ -458,10 +519,29 @@ class LayeredStorageService:
     async def _soft_delete_message_in_postgres(self, message_id: str) -> None:
         """Soft delete message in PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            message_id: The message ID to soft delete
         """
-        # TODO: Implement actual PostgreSQL soft delete
-        logger.debug(f"Would soft delete message {message_id} in PostgreSQL")
+        from sprinkle.models.message import Message
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            return
+        
+        result = await db.execute(
+            select(Message).where(Message.id == message_id)
+        )
+        msg = result.scalar_one_or_none()
+        
+        if msg is None:
+            logger.warning(f"Message {message_id} not found for soft delete")
+            return
+        
+        msg.is_deleted = True
+        msg.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        logger.debug(f"Soft deleted message {message_id} in PostgreSQL")
     
     # =========================================================================
     # Conversation Operations
@@ -497,10 +577,43 @@ class LayeredStorageService:
     ) -> None:
         """Save conversation to PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            conversation: The conversation record to save
         """
-        # TODO: Implement actual PostgreSQL write
-        logger.debug(f"Would save conversation {conversation.id} to PostgreSQL")
+        from sprinkle.models.conversation import Conversation, ConversationType
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            logger.warning("No DB session available for saving conversation to PostgreSQL")
+            return
+        
+        # Check if conversation already exists
+        result = await db.execute(
+            select(Conversation).where(Conversation.id == conversation.id)
+        )
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            # Update existing conversation
+            existing.name = conversation.name
+            existing.type = ConversationType(conversation.type)
+            existing.updated_at = datetime.now(timezone.utc)
+        else:
+            # Insert new conversation
+            conv = Conversation(
+                id=conversation.id,
+                type=ConversationType(conversation.type),
+                name=conversation.name,
+                owner_id=conversation.owner_id,
+                extra_data=json.dumps(conversation.metadata) if conversation.metadata else "{}",
+                created_at=conversation.created_at or datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            db.add(conv)
+        
+        await db.commit()
+        logger.debug(f"Saved conversation {conversation.id} to PostgreSQL")
     
     async def get_conversation(
         self,
@@ -533,11 +646,36 @@ class LayeredStorageService:
     ) -> Optional[ConversationRecord]:
         """Get conversation from PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            conversation_id: The conversation ID
+        
+        Returns:
+            ConversationRecord if found, None otherwise
         """
-        # TODO: Implement actual PostgreSQL read
-        logger.debug(f"Would get conversation {conversation_id} from PostgreSQL")
-        return None
+        from sprinkle.models.conversation import Conversation
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            return None
+        
+        result = await db.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        conv = result.scalar_one_or_none()
+        
+        if conv is None:
+            return None
+        
+        return ConversationRecord(
+            id=conv.id,
+            type=conv.type.value if hasattr(conv.type, 'value') else conv.type,
+            name=conv.name,
+            owner_id=conv.owner_id,
+            metadata=json.loads(conv.extra_data) if conv.extra_data else {},
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+        )
     
     async def get_user_conversations(
         self,
@@ -574,11 +712,43 @@ class LayeredStorageService:
     ) -> List[ConversationRecord]:
         """Get user's conversations from PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            user_id: The user ID
+        
+        Returns:
+            List of ConversationRecords
         """
-        # TODO: Implement actual PostgreSQL query
-        logger.debug(f"Would get conversations for user {user_id} from PostgreSQL")
-        return []
+        from sprinkle.models.conversation import Conversation
+        from sprinkle.models.conversation_member import ConversationMember
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            return []
+        
+        # Get conversation IDs where user is a member
+        subq = (
+            select(ConversationMember.conversation_id)
+            .where(ConversationMember.user_id == user_id)
+        )
+        result = await db.execute(
+            select(Conversation)
+            .where(Conversation.id.in_(subq))
+        )
+        convs = result.scalars().all()
+        
+        return [
+            ConversationRecord(
+                id=conv.id,
+                type=conv.type.value if hasattr(conv.type, 'value') else conv.type,
+                name=conv.name,
+                owner_id=conv.owner_id,
+                metadata=json.loads(conv.extra_data) if conv.extra_data else {},
+                created_at=conv.created_at,
+                updated_at=conv.updated_at,
+            )
+            for conv in convs
+        ]
     
     # =========================================================================
     # Member Operations
@@ -611,10 +781,43 @@ class LayeredStorageService:
     async def _add_member_to_postgres(self, member: MemberRecord) -> None:
         """Add member to PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            member: The member record to add
         """
-        # TODO: Implement actual PostgreSQL write
-        logger.debug(f"Would add member {member.user_id} to PostgreSQL")
+        from sprinkle.models.conversation_member import ConversationMember, MemberRole
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            logger.warning("No DB session available for adding member to PostgreSQL")
+            return
+        
+        # Check if member already exists
+        result = await db.execute(
+            select(ConversationMember)
+            .where(ConversationMember.conversation_id == member.conversation_id)
+            .where(ConversationMember.user_id == member.user_id)
+        )
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            # Update existing member
+            existing.role = MemberRole(member.role)
+            existing.is_active = member.is_active
+        else:
+            # Insert new member
+            db_member = ConversationMember(
+                id=member.id or str(uuid4()),
+                conversation_id=member.conversation_id,
+                user_id=member.user_id,
+                role=MemberRole(member.role),
+                invited_by=member.invited_by,
+                joined_at=member.joined_at or datetime.now(timezone.utc),
+            )
+            db.add(db_member)
+        
+        await db.commit()
+        logger.debug(f"Added member {member.user_id} to conversation {member.conversation_id} in PostgreSQL")
     
     async def remove_member(
         self,
@@ -647,10 +850,32 @@ class LayeredStorageService:
     ) -> None:
         """Remove member from PostgreSQL (soft delete).
         
-        Placeholder for actual implementation.
+        Args:
+            conversation_id: The conversation ID
+            user_id: The user ID to remove
         """
-        # TODO: Implement actual PostgreSQL soft delete
-        logger.debug(f"Would remove member {user_id} from PostgreSQL")
+        from sprinkle.models.conversation_member import ConversationMember
+        from sqlalchemy import select, update
+        
+        db = self._db
+        if db is None:
+            return
+        
+        result = await db.execute(
+            select(ConversationMember)
+            .where(ConversationMember.conversation_id == conversation_id)
+            .where(ConversationMember.user_id == user_id)
+        )
+        member = result.scalar_one_or_none()
+        
+        if member is None:
+            logger.warning(f"Member {user_id} not found in conversation {conversation_id}")
+            return
+        
+        # Soft delete - set is_active to False
+        member.is_active = False
+        await db.commit()
+        logger.debug(f"Soft removed member {user_id} from conversation {conversation_id} in PostgreSQL")
     
     async def get_member(
         self,
@@ -685,11 +910,39 @@ class LayeredStorageService:
     ) -> Optional[MemberRecord]:
         """Get member from PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            conversation_id: The conversation ID
+            user_id: The user ID
+        
+        Returns:
+            MemberRecord if found, None otherwise
         """
-        # TODO: Implement actual PostgreSQL read
-        logger.debug(f"Would get member {user_id} from PostgreSQL")
-        return None
+        from sprinkle.models.conversation_member import ConversationMember
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            return None
+        
+        result = await db.execute(
+            select(ConversationMember)
+            .where(ConversationMember.conversation_id == conversation_id)
+            .where(ConversationMember.user_id == user_id)
+        )
+        member = result.scalar_one_or_none()
+        
+        if member is None:
+            return None
+        
+        return MemberRecord(
+            id=member.id,
+            conversation_id=member.conversation_id,
+            user_id=member.user_id,
+            role=member.role.value if hasattr(member.role, 'value') else member.role,
+            invited_by=member.invited_by,
+            joined_at=member.joined_at,
+            is_active=member.is_active,
+        )
     
     async def get_conversation_members(
         self,
@@ -725,11 +978,38 @@ class LayeredStorageService:
     ) -> List[MemberRecord]:
         """Get conversation members from PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            conversation_id: The conversation ID
+        
+        Returns:
+            List of MemberRecords for active members
         """
-        # TODO: Implement actual PostgreSQL query
-        logger.debug(f"Would get members for conversation {conversation_id} from PostgreSQL")
-        return []
+        from sprinkle.models.conversation_member import ConversationMember
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            return []
+        
+        result = await db.execute(
+            select(ConversationMember)
+            .where(ConversationMember.conversation_id == conversation_id)
+            .where(ConversationMember.is_active == True)  # noqa: E712
+        )
+        members = result.scalars().all()
+        
+        return [
+            MemberRecord(
+                id=member.id,
+                conversation_id=member.conversation_id,
+                user_id=member.user_id,
+                role=member.role.value if hasattr(member.role, 'value') else member.role,
+                invited_by=member.invited_by,
+                joined_at=member.joined_at,
+                is_active=member.is_active,
+            )
+            for member in members
+        ]
     
     async def update_member_role(
         self,
@@ -776,10 +1056,32 @@ class LayeredStorageService:
     ) -> None:
         """Update member role in PostgreSQL.
         
-        Placeholder for actual implementation.
+        Args:
+            conversation_id: The conversation ID
+            user_id: The user ID
+            new_role: The new role to set
         """
-        # TODO: Implement actual PostgreSQL update
-        logger.debug(f"Would update member {user_id} role to {new_role} in PostgreSQL")
+        from sprinkle.models.conversation_member import ConversationMember, MemberRole
+        from sqlalchemy import select
+        
+        db = self._db
+        if db is None:
+            return
+        
+        result = await db.execute(
+            select(ConversationMember)
+            .where(ConversationMember.conversation_id == conversation_id)
+            .where(ConversationMember.user_id == user_id)
+        )
+        member = result.scalar_one_or_none()
+        
+        if member is None:
+            logger.warning(f"Member {user_id} not found in conversation {conversation_id}")
+            return
+        
+        member.role = MemberRole(new_role)
+        await db.commit()
+        logger.debug(f"Updated member {user_id} role to {new_role} in PostgreSQL")
     
     # =========================================================================
     # Online Status
@@ -1005,17 +1307,19 @@ class StorageMigrationTask:
 
 async def create_layered_storage(
     redis_url: str = "redis://localhost:6379/0",
+    db_session=None,  # SQLAlchemy async session, optional
 ) -> LayeredStorageService:
     """Create a layered storage service.
     
     Args:
         redis_url: Redis connection URL
+        db_session: Optional SQLAlchemy async session for PostgreSQL
     
     Returns:
         Configured LayeredStorageService
     """
     redis_client = redis.from_url(redis_url, decode_responses=False)
-    return LayeredStorageService(redis_client)
+    return LayeredStorageService(redis_client, db_session)
 
 
 __all__ = [

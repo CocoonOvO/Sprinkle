@@ -1,6 +1,6 @@
 """ConversationMember model for managing conversation participants."""
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum as SQLEnum, Boolean
 from datetime import datetime
 from . import Base
 import enum
@@ -19,9 +19,11 @@ class ConversationMember(Base):
     
     __tablename__ = "conversation_members"
     
-    id = Column(String(36), primary_key=True)  # UUID
-    conversation_id = Column(String(36), ForeignKey("conversations.id"), nullable=False)
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    conversation_id = Column(String(36), ForeignKey("conversations.id"), primary_key=True)
+    user_id = Column(String(36), ForeignKey("users.id"), primary_key=True)
     role = Column(SQLEnum(MemberRole), default=MemberRole.member, nullable=False)
     invited_by = Column(String(36), ForeignKey("users.id"), nullable=True)
     joined_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    nickname = Column(String(100), nullable=True)
+    left_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)

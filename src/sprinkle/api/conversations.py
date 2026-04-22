@@ -9,9 +9,12 @@ the API checks BOTH the in-memory stores AND the database:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -438,7 +441,6 @@ async def create_conversation(
         
         # Add owner as member
         db_owner_member = ConversationMember(
-            id=str(uuid4()),
             conversation_id=conv_id,
             user_id=current_user.user_id,
             role=MemberRole.owner,
@@ -450,7 +452,6 @@ async def create_conversation(
         for member_id in request.member_ids:
             if member_id != current_user.user_id:
                 db_member = ConversationMember(
-                    id=str(uuid4()),
                     conversation_id=conv_id,
                     user_id=member_id,
                     role=MemberRole.member,
@@ -460,10 +461,12 @@ async def create_conversation(
                 db.add(db_member)
         
         db.commit()
-    except Exception:
+        db.expunge_all()  # Detach all objects from session
+    except Exception as e:
         db.rollback()
-        # In-memory store already has the data, continue
-        pass
+        # Log the error but continue with in-memory data
+        # This maintains backward compatibility with tests using mock users
+        logger.warning(f"Database error during conversation creation: {e}. Continuing with in-memory only.")
     finally:
         db.close()
     
@@ -731,7 +734,6 @@ async def add_conversation_member(
         db = _get_db()
         try:
             db_member = ConversationMember(
-                id=str(uuid4()),
                 conversation_id=conversation_id,
                 user_id=user_id_to_add,
                 role=MemberRole(role_str),
@@ -740,7 +742,6 @@ async def add_conversation_member(
             )
             db.add(db_member)
             db.commit()
-            db.refresh(db_member)
         except Exception:
             db.rollback()
         finally:
@@ -777,7 +778,6 @@ async def add_conversation_member(
         now = datetime.now(timezone.utc)
         
         member = ConversationMember(
-            id=str(uuid4()),
             conversation_id=conversation_id,
             user_id=user_id_to_add,
             role=MemberRole(role_str),
@@ -786,10 +786,8 @@ async def add_conversation_member(
         )
         db.add(member)
         db.commit()
-        db.refresh(member)
         
         return {
-            "id": member.id,
             "conversation_id": member.conversation_id,
             "user_id": member.user_id,
             "role": member.role.value if hasattr(member.role, 'value') else member.role,
