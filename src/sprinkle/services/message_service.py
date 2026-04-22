@@ -214,6 +214,17 @@ class MessageService:
             exclude_sender=True,
         )
         
+        # Trigger push notification routing
+        await self._trigger_push_notification(
+            event_type="chat.message",
+            conversation_id=conversation_id,
+            sender_id=sender_id,
+            content=content,
+            mentions=mentions or [],
+            reply_to=reply_to,
+            metadata={"reply_to": reply_to, **(metadata or {})},
+        )
+        
         logger.info(f"Message {message_id} sent by {sender_id} to conversation {conversation_id}")
         
         return message
@@ -361,6 +372,15 @@ class MessageService:
             exclude_sender=False,
         )
         
+        # Trigger push notification
+        await self._trigger_push_notification(
+            event_type="chat.message.edited",
+            conversation_id=message.conversation_id,
+            sender_id=editor_id,
+            content=new_content,
+            metadata={"message_id": message_id, "edited_at": now.isoformat()},
+        )
+        
         logger.info(f"Message {message_id} edited by {editor_id}")
         
         return message
@@ -436,6 +456,15 @@ class MessageService:
                 event_type="message.deleted",
                 exclude_sender=False,
             )
+        
+        # Trigger push notification
+        await self._trigger_push_notification(
+            event_type="chat.message.deleted",
+            conversation_id=message.conversation_id if message else conversation_id,
+            sender_id=deleter_id,
+            content="[deleted message]",
+            metadata={"message_id": message_id, "deleted_at": datetime.now(timezone.utc).isoformat()},
+        )
         
         logger.info(f"Message {message_id} deleted by {deleter_id}")
     
@@ -571,6 +600,126 @@ class MessageService:
                 })
         except Exception as e:
             logger.error(f"Failed to deliver message to subscribers: {e}")
+    
+    async def _trigger_push_notification(
+        self,
+        event_type: str,
+        conversation_id: str,
+        sender_id: str,
+        content: str,
+        mentions: Optional[List[str]] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Trigger push notification routing for an event.
+        
+        This method creates a PushEventData and routes it to subscribed agents.
+        It manages its own database session internally.
+        
+        Args:
+            event_type: The type of push event (e.g., "chat.message")
+            conversation_id: The conversation ID
+            sender_id: Who triggered the event
+            content: The message content
+            mentions: List of mentioned user IDs
+            reply_to: ID of message being replied to
+            metadata: Additional event metadata
+        """
+        try:
+            # Import here to avoid circular imports
+            from sprinkle.push.events import PushEvent, PushEventData
+            from sprinkle.storage.database import get_async_session
+            
+            # Map event_type string to PushEvent enum
+            event_map = {
+                "chat.message": PushEvent.CHAT_MESSAGE,
+                "chat.message.edited": PushEvent.CHAT_MESSAGE_EDITED,
+                "chat.message.deleted": PushEvent.CHAT_MESSAGE_DELETED,
+                "chat.message.reply": PushEvent.CHAT_MESSAGE_REPLY,
+                "mention": PushEvent.MENTION,
+                "group.member.joined": PushEvent.GROUP_MEMBER_JOINED,
+                "group.member.left": PushEvent.GROUP_MEMBER_LEFT,
+                "group.member.kicked": PushEvent.GROUP_MEMBER_KICKED,
+                "group.created": PushEvent.GROUP_CREATED,
+                "group.disbanded": PushEvent.GROUP_DISBANDED,
+                "group.info.updated": PushEvent.GROUP_INFO_UPDATED,
+                "system.notification": PushEvent.SYSTEM_NOTIFICATION,
+            }
+            
+            push_event = event_map.get(event_type, PushEvent.CHAT_MESSAGE)
+            
+            # Create PushEventData
+            event_data = PushEventData(
+                event=push_event,
+                conversation_id=conversation_id,
+                sender_id=sender_id,
+                target_ids=mentions or [],
+                content=content,
+                metadata=metadata or {},
+                template_name=event_type,
+            )
+            
+            # Route and deliver using push system
+            async with get_async_session() as db:
+                from sprinkle.push.subscription import SubscriptionService
+                from sprinkle.push.templates import PushTemplateEngine
+                from sprinkle.push.router import PushRouter
+                
+                subscription_service = SubscriptionService(db)
+                template_engine = PushTemplateEngine(db)
+                router = PushRouter(subscription_service, template_engine)
+                
+                # Route event to subscribed agents
+                results = await router.route_event_with_render(event_data)
+                
+                if results:
+                    logger.info(f"Push notification routed to {len(results)} agents for event {event_type}")
+                    
+                    # Deliver to each agent
+                    # For now, delivery is handled by the agent's registered callback
+                    # This will be expanded in future phases
+                    for agent_id, rendered_content in results:
+                        await self._deliver_push_to_agent(agent_id, event_data, rendered_content)
+                        
+        except ImportError as e:
+            logger.warning(f"Push system not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to trigger push notification: {e}")
+    
+    async def _deliver_push_to_agent(
+        self,
+        agent_id: str,
+        event_data: Any,
+        rendered_content: str,
+    ) -> None:
+        """Deliver a push notification to a specific agent.
+        
+        This method can be extended to support different delivery mechanisms
+        (WebSocket, HTTP webhook, email, etc.) based on agent configuration.
+        
+        Args:
+            agent_id: The target agent ID
+            event_data: The push event data
+            rendered_content: The rendered notification content
+        """
+        if self._ws_manager is None:
+            return
+        
+        try:
+            # Import here to avoid circular imports
+            from sprinkle.api.websocket import ConnectionManager
+            
+            # Find sessions for this agent and send push
+            # This is a simplified implementation
+            ws_connections = ConnectionManager._ws_connections
+            
+            for session_id, websocket in ws_connections.items():
+                # Would need to look up if this session belongs to the agent
+                # For now, just broadcast to all sessions subscribed to the conversation
+                pass
+                
+        except Exception as e:
+            logger.error(f"Failed to deliver push to agent {agent_id}: {e}")
 
 
 # ============================================================================

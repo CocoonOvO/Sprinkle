@@ -175,6 +175,78 @@ def _message_to_response(msg: Message) -> MessageResponse:
     )
 
 
+async def _trigger_message_push(
+    db: AsyncSession,
+    event_type: str,
+    conversation_id: str,
+    sender_id: str,
+    content: str,
+    mentions: Optional[List[str]] = None,
+    reply_to: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Trigger push notification routing for a message event.
+    
+    Args:
+        db: Database session
+        event_type: Type of push event
+        conversation_id: Target conversation ID
+        sender_id: Who triggered the event
+        content: Message content
+        mentions: List of mentioned user IDs
+        reply_to: ID of message being replied to
+        metadata: Additional event metadata
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        from sprinkle.push.events import PushEvent, PushEventData
+        from sprinkle.push.subscription import SubscriptionService
+        from sprinkle.push.templates import PushTemplateEngine
+        from sprinkle.push.router import PushRouter
+        
+        # Map event_type to PushEvent enum
+        event_map = {
+            "chat.message": PushEvent.CHAT_MESSAGE,
+            "chat.message.edited": PushEvent.CHAT_MESSAGE_EDITED,
+            "chat.message.deleted": PushEvent.CHAT_MESSAGE_DELETED,
+            "chat.message.reply": PushEvent.CHAT_MESSAGE_REPLY,
+            "mention": PushEvent.MENTION,
+            "group.member.joined": PushEvent.GROUP_MEMBER_JOINED,
+            "group.member.left": PushEvent.GROUP_MEMBER_LEFT,
+            "group.member.kicked": PushEvent.GROUP_MEMBER_KICKED,
+        }
+        
+        push_event = event_map.get(event_type, PushEvent.CHAT_MESSAGE)
+        
+        # Create PushEventData
+        event_data = PushEventData(
+            event=push_event,
+            conversation_id=conversation_id,
+            sender_id=sender_id,
+            target_ids=mentions or [],
+            content=content,
+            metadata=metadata or {},
+            template_name=event_type,
+        )
+        
+        # Route and deliver
+        subscription_service = SubscriptionService(db)
+        template_engine = PushTemplateEngine(db)
+        router = PushRouter(subscription_service, template_engine)
+        
+        results = await router.route_event_with_render(event_data)
+        
+        if results:
+            logger.info(f"Push routed to {len(results)} agents for event {event_type}")
+            
+    except ImportError as e:
+        logger.warning(f"Push system not available: {e}")
+    except Exception as e:
+        logger.error(f"Failed to trigger push notification: {e}")
+
+
 async def get_message_or_404_db(db: AsyncSession, message_id: str) -> Message:
     """Get message by ID from database or raise 404."""
     result = await db.execute(
@@ -390,6 +462,18 @@ async def send_message(
     db.add(msg)
     await db.commit()
     await db.refresh(msg)
+    
+    # Trigger push notification routing
+    await _trigger_message_push(
+        db=db,
+        event_type="chat.message",
+        conversation_id=conversation_id,
+        sender_id=current_user.user_id,
+        content=request.content,
+        mentions=request.mentions,
+        reply_to=request.reply_to,
+        metadata={"reply_to": request.reply_to},
+    )
 
     return _message_to_response(msg)
 
@@ -440,6 +524,16 @@ async def update_message(
 
     await db.commit()
     await db.refresh(message)
+    
+    # Trigger push notification
+    await _trigger_message_push(
+        db=db,
+        event_type="chat.message.edited",
+        conversation_id=message.conversation_id,
+        sender_id=current_user.user_id,
+        content=request.content,
+        metadata={"message_id": message_id, "edited_at": message.updated_at.isoformat()},
+    )
 
     return _message_to_response(message)
 
@@ -482,3 +576,13 @@ async def delete_message(
     message.deleted_at = datetime.utcnow()
 
     await db.commit()
+    
+    # Trigger push notification
+    await _trigger_message_push(
+        db=db,
+        event_type="chat.message.deleted",
+        conversation_id=message.conversation_id,
+        sender_id=current_user.user_id,
+        content="[deleted message]",
+        metadata={"message_id": message_id, "deleted_at": message.deleted_at.isoformat()},
+    )

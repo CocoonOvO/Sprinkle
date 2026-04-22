@@ -441,7 +441,16 @@ class WebSocketHandler:
                 await self._send_error(websocket, ErrorCode.INVALID_PARAMS, f"Unknown message type: {msg_type}")
     
     async def _handle_subscribe(self, session_id: str, params: dict):
-        """处理订阅请求"""
+        """处理订阅请求
+        
+        Supports optional mode parameter for subscription mode:
+        - "direct": Receive all messages in conversation
+        - "mention_only": Only receive when mentioned (default)
+        - "unlimited": Receive all events (same as direct)
+        - "event_based": Only receive specific events
+        
+        For event_based mode, also provide "events" list parameter.
+        """
         conversation_id = params.get("conversation_id")
         if not conversation_id:
             websocket = ConnectionManager.get_websocket(session_id)
@@ -449,7 +458,60 @@ class WebSocketHandler:
                 await self._send_error(websocket, ErrorCode.INVALID_PARAMS, "conversation_id required")
             return
         
+        # Get session to get user_id
+        session = await self._session_manager.get_session(session_id)
+        if not session:
+            return
+        
+        user_id = session.user_id
+        
+        # Get subscription mode (default: mention_only for backward compatibility)
+        mode_str = params.get("mode", "mention_only")
+        events = params.get("events", None)
+        
+        # Map mode string to SubscriptionMode enum
+        from sprinkle.push.subscription import SubscriptionMode
+        from sprinkle.push.events import PushEvent
+        
+        mode_map = {
+            "direct": SubscriptionMode.DIRECT,
+            "mention_only": SubscriptionMode.MENTION_ONLY,
+            "unlimited": SubscriptionMode.UNLIMITED,
+            "event_based": SubscriptionMode.EVENT_BASED,
+        }
+        mode = mode_map.get(mode_str, SubscriptionMode.MENTION_ONLY)
+        
+        # Parse events list if provided
+        subscribed_events = None
+        if mode == SubscriptionMode.EVENT_BASED and events:
+            subscribed_events = []
+            for e in events:
+                try:
+                    subscribed_events.append(PushEvent(e))
+                except ValueError:
+                    logger.warning(f"Unknown push event type in subscribe: {e}")
+        
+        # Also maintain session-based subscription for real-time WebSocket delivery
         success = await self._session_manager.subscribe(session_id, conversation_id)
+        
+        # Additionally, persist agent subscription to database for push routing
+        try:
+            from sprinkle.storage.database import get_async_session
+            from sprinkle.push.subscription import SubscriptionService
+            
+            async with get_async_session() as db:
+                sub_service = SubscriptionService(db)
+                await sub_service.subscribe(
+                    agent_id=user_id,
+                    conversation_id=conversation_id,
+                    mode=mode,
+                    events=subscribed_events,
+                )
+        except ImportError:
+            logger.warning("Push subscription service not available")
+        except Exception as e:
+            logger.error(f"Failed to persist subscription: {e}")
+        
         websocket = ConnectionManager.get_websocket(session_id)
         if websocket:
             await websocket.send_json({
@@ -459,13 +521,19 @@ class WebSocketHandler:
                     "action": "subscribe",
                     "conversation_id": conversation_id,
                     "status": "subscribed" if success else "error",
+                    "mode": mode_str,
                 }
             })
         
-        logger.debug(f"Subscribe: session={session_id}, conversation={conversation_id}")
+        logger.debug(f"Subscribe: session={session_id}, conversation={conversation_id}, mode={mode_str}")
     
     async def _handle_unsubscribe(self, session_id: str, params: dict):
-        """处理取消订阅请求"""
+        """处理取消订阅请求
+        
+        This removes both the session-based subscription (for real-time
+        WebSocket delivery) and the database-backed agent subscription
+        (for push notification routing).
+        """
         conversation_id = params.get("conversation_id")
         if not conversation_id:
             websocket = ConnectionManager.get_websocket(session_id)
@@ -473,7 +541,32 @@ class WebSocketHandler:
                 await self._send_error(websocket, ErrorCode.INVALID_PARAMS, "conversation_id required")
             return
         
+        # Get session to get user_id
+        session = await self._session_manager.get_session(session_id)
+        if not session:
+            return
+        
+        user_id = session.user_id
+        
+        # Remove session-based subscription for real-time WebSocket delivery
         success = await self._session_manager.unsubscribe(session_id, conversation_id)
+        
+        # Also remove database-backed agent subscription for push routing
+        try:
+            from sprinkle.storage.database import get_async_session
+            from sprinkle.push.subscription import SubscriptionService
+            
+            async with get_async_session() as db:
+                sub_service = SubscriptionService(db)
+                await sub_service.unsubscribe(
+                    agent_id=user_id,
+                    conversation_id=conversation_id,
+                )
+        except ImportError:
+            logger.warning("Push subscription service not available")
+        except Exception as e:
+            logger.error(f"Failed to remove subscription: {e}")
+        
         websocket = ConnectionManager.get_websocket(session_id)
         if websocket:
             await websocket.send_json({
