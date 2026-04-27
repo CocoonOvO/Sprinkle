@@ -182,6 +182,36 @@ class SSEEventEmitter:
         }
         await self._broadcast_to_conversation(conversation_id, SSEEventType.MESSAGE_SENT, event_data, event_id)
     
+    async def emit_message_edited(
+        self,
+        conversation_id: str,
+        message: Dict[str, Any],
+    ):
+        """发送消息编辑事件"""
+        event_id = await self._generate_event_id()
+        event_data = {
+            "event": SSEEventType.MESSAGE_SENT,  # Reuse for edited
+            "conversation_id": conversation_id,
+            "message": message,
+            "edited": True,
+        }
+        await self._broadcast_to_conversation(conversation_id, SSEEventType.MESSAGE_SENT, event_data, event_id)
+    
+    async def emit_message_deleted(
+        self,
+        conversation_id: str,
+        message: Dict[str, Any],
+    ):
+        """发送消息删除事件"""
+        event_id = await self._generate_event_id()
+        event_data = {
+            "event": SSEEventType.MESSAGE_SENT,  # Reuse for deleted
+            "conversation_id": conversation_id,
+            "message": message,
+            "deleted": True,
+        }
+        await self._broadcast_to_conversation(conversation_id, SSEEventType.MESSAGE_SENT, event_data, event_id)
+    
     async def _broadcast_to_conversation(
         self,
         conversation_id: str,

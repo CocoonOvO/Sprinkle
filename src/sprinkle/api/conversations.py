@@ -456,6 +456,19 @@ async def update_conversation(
 
         db_sync.commit()
         db_sync.refresh(conv)
+        
+        # Emit SSE event for conversation updated
+        try:
+            from sprinkle.api.events import SSEEventEmitter
+            emitter = SSEEventEmitter.get_instance()
+            update_data = {
+                "name": conv.name,
+                "metadata": _parse_extra_data(conv.extra_data),
+            }
+            await emitter.emit_conversation_updated(conversation_id, "name_updated", update_data)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"SSE emit failed: {e}")
 
         return _build_conversation_response(conv, db_sync)
     except HTTPException:

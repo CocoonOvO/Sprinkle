@@ -254,7 +254,13 @@ async def _trigger_message_push(
                 "mentions": mentions or [],
                 "reply_to": reply_to,
             }
-            await emitter.emit_message_sent(conversation_id, message_dict)
+            # Emit correct SSE event based on type
+            if event_type == "chat.message":
+                await emitter.emit_message_sent(conversation_id, message_dict)
+            elif event_type == "chat.message.edited":
+                await emitter.emit_message_edited(conversation_id, message_dict)
+            elif event_type == "chat.message.deleted":
+                await emitter.emit_message_deleted(conversation_id, message_dict)
         except Exception as sse_err:
             logger.warning(f"SSE emit failed: {sse_err}")
             

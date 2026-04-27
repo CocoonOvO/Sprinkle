@@ -200,6 +200,27 @@ async def add_member(
         db.add(member)
         db.commit()
         db.refresh(member)
+        
+        # Emit SSE event for member joined
+        import logging
+        import sys
+        logger = logging.getLogger(__name__)
+        print("SSE_EMIT_DEBUG: Starting emit for member joined", file=sys.stderr, flush=True)
+        try:
+            from sprinkle.api.events import SSEEventEmitter
+            emitter = SSEEventEmitter.get_instance()
+            member_dict = {
+                "user_id": member.user_id,
+                "conversation_id": conversation_id,
+                "role": member.role.value if hasattr(member.role, 'value') else member.role,
+                "nickname": member.nickname,
+                "joined_at": member.joined_at.isoformat() if hasattr(member.joined_at, 'isoformat') else str(member.joined_at),
+            }
+            await emitter.emit_member_joined(conversation_id, member.user_id, member_dict)
+            print(f"SSE_EMIT_DEBUG: emit done for conv={conversation_id}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"SSE_EMIT_ERROR: {e}", file=sys.stderr, flush=True)
+            logger.error(f"SSE member_joined emit failed: {e}")
 
         return MemberResponse(
             user_id=member.user_id,
@@ -268,6 +289,15 @@ async def remove_member(
 
         db.delete(member)
         db.commit()
+        
+        # Emit SSE event for member left
+        try:
+            from sprinkle.api.events import SSEEventEmitter
+            emitter = SSEEventEmitter.get_instance()
+            await emitter.emit_member_left(conversation_id, user_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"SSE emit failed: {e}")
     except HTTPException:
         raise
     finally:
