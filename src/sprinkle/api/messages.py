@@ -240,6 +240,23 @@ async def _trigger_message_push(
         
         if results:
             logger.info(f"Push routed to {len(results)} agents for event {event_type}")
+        
+        # Also emit to SSE for real-time WebSocket/SSE clients
+        try:
+            from sprinkle.api.events import SSEEventEmitter
+            emitter = SSEEventEmitter.get_instance()
+            message_dict = {
+                "id": metadata.get("message_id", ""),
+                "conversation_id": conversation_id,
+                "sender_id": sender_id,
+                "content": content,
+                "content_type": "text",
+                "mentions": mentions or [],
+                "reply_to": reply_to,
+            }
+            await emitter.emit_message_sent(conversation_id, message_dict)
+        except Exception as sse_err:
+            logger.warning(f"SSE emit failed: {sse_err}")
             
     except ImportError as e:
         logger.warning(f"Push system not available: {e}")
