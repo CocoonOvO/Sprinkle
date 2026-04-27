@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sprinkle.kernel.auth import UserCredentials
 from sprinkle.api.dependencies import get_current_user, get_db_session
-from sprinkle.models import Conversation, ConversationMember, ConversationType, MemberRole
+from sprinkle.models import Conversation, ConversationMember, ConversationType, MemberRole, Message
 from sprinkle.storage.database import SessionLocal
 
 router = APIRouter()
@@ -499,6 +499,12 @@ async def delete_conversation(
         db_sync.execute(
             ConversationMember.__table__.delete()
             .where(ConversationMember.conversation_id == conversation_id)
+        )
+
+        # Delete messages
+        db_sync.execute(
+            Message.__table__.delete()
+            .where(Message.conversation_id == conversation_id)
         )
 
         # Delete conversation
