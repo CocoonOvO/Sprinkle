@@ -20,3 +20,9 @@ redis:
 kernel:
   auth:
     secret_key: "CHANGE_ME"
+
+logging:
+  level: "INFO"
+  file: "logs/sprinkle.log"
+  max_bytes: 10485760
+  backup_count: 5

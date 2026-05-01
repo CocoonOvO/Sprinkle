@@ -203,9 +203,8 @@ async def add_member(
         
         # Emit SSE event for member joined
         import logging
-        import sys
         logger = logging.getLogger(__name__)
-        print("SSE_EMIT_DEBUG: Starting emit for member joined", file=sys.stderr, flush=True)
+        logger.debug(f"SSE: Emitting member_joined event for conv={conversation_id}, user={member.user_id}")
         try:
             from sprinkle.api.events import SSEEventEmitter
             emitter = SSEEventEmitter.get_instance()
@@ -217,10 +216,9 @@ async def add_member(
                 "joined_at": member.joined_at.isoformat() if hasattr(member.joined_at, 'isoformat') else str(member.joined_at),
             }
             await emitter.emit_member_joined(conversation_id, member.user_id, member_dict)
-            print(f"SSE_EMIT_DEBUG: emit done for conv={conversation_id}", file=sys.stderr, flush=True)
+            logger.debug(f"SSE: member_joined emit done for conv={conversation_id}")
         except Exception as e:
-            print(f"SSE_EMIT_ERROR: {e}", file=sys.stderr, flush=True)
-            logger.error(f"SSE member_joined emit failed: {e}")
+            logger.warning(f"SSE member_joined emit failed: {e}")
 
         return MemberResponse(
             user_id=member.user_id,

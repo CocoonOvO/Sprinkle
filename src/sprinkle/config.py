@@ -52,6 +52,14 @@ class RedisConfig(BaseModel):
         return f"redis://{self.host}:{self.port}/{self.db}"
 
 
+class LoggingConfig(BaseModel):
+    """Logging configuration."""
+    level: str = "INFO"
+    file: str = "logs/sprinkle.log"
+    max_bytes: int = 10485760  # 10MB
+    backup_count: int = 5
+
+
 class Settings(BaseSettings):
     """Main settings class that supports env var override.
     
@@ -59,10 +67,12 @@ class Settings(BaseSettings):
     - APP__NAME, APP__DEBUG, APP__HOST, APP__PORT
     - DATABASE__HOST, DATABASE__PORT, DATABASE__NAME, etc.
     - REDIS__HOST, REDIS__PORT, REDIS__DB
+    - LOGGING__LEVEL, LOGGING__FILE, LOGGING__MAX_BYTES, LOGGING__BACKUP_COUNT
     """
     app: AppConfig = Field(default_factory=AppConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -150,6 +160,8 @@ def get_settings(config_path: Optional[str] = None) -> Settings:
         settings_kwargs["database"] = DatabaseConfig(**yaml_config["database"])
     if "redis" in yaml_config:
         settings_kwargs["redis"] = RedisConfig(**yaml_config["redis"])
+    if "logging" in yaml_config:
+        settings_kwargs["logging"] = LoggingConfig(**yaml_config["logging"])
     
     # Create settings - env vars are processed automatically by pydantic-settings
     # when we use _env_file=None to prevent loading .env file, but keep env parsing
@@ -208,6 +220,16 @@ def _apply_env_overrides(settings: Settings) -> None:
         settings.redis.port = int(os.environ["REDIS__PORT"])
     if "REDIS__DB" in os.environ:
         settings.redis.db = int(os.environ["REDIS__DB"])
+    
+    # Logging config overrides
+    if "LOGGING__LEVEL" in os.environ:
+        settings.logging.level = os.environ["LOGGING__LEVEL"]
+    if "LOGGING__FILE" in os.environ:
+        settings.logging.file = os.environ["LOGGING__FILE"]
+    if "LOGGING__MAX_BYTES" in os.environ:
+        settings.logging.max_bytes = int(os.environ["LOGGING__MAX_BYTES"])
+    if "LOGGING__BACKUP_COUNT" in os.environ:
+        settings.logging.backup_count = int(os.environ["LOGGING__BACKUP_COUNT"])
 
 
 # ============================================================================

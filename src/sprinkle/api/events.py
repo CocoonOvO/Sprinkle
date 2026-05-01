@@ -339,7 +339,7 @@ async def events_endpoint(
     # Start heartbeat
     heartbeat_task = asyncio.create_task(sse_heartbeat(queue))
     
-    logger.info(f"SSE connected: session={session_id}, user={user.username}, last_event_id={Last_Event_ID}")
+    logger.debug(f"SSE connected: session={session_id}, user={user.username}, last_event_id={Last_Event_ID}")
     
     # Event generator
     async def event_generator():
@@ -389,7 +389,7 @@ async def events_endpoint(
             await session_manager.delete_session(session_id)
             await session_manager.close()
             
-            logger.info(f"SSE disconnected: session={session_id}")
+            logger.debug(f"SSE disconnected: session={session_id}")
     
     return EventSourceResponse(event_generator())
 
