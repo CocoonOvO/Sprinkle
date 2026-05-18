@@ -43,7 +43,10 @@ class CreateConversationRequest(BaseModel):
     """Create conversation request schema."""
     type: str = Field(..., pattern="^(direct|group)$")
     name: str | None = Field(None, max_length=255)
-    member_ids: List[str] = []
+    # For group: target_id is ignored, use member_ids
+    # For direct: target_id is the other participant (required)
+    target_id: str | None = Field(None, description="Target user ID for direct conversation")
+    member_ids: List[str] = Field(default_factory=list, description="Member user IDs for group conversation")
     metadata: Dict[str, Any] = {}
 
 
@@ -340,11 +343,25 @@ async def create_conversation(
     db: AsyncSession = Depends(get_db_session),
 ) -> ConversationResponse:
     """Create a new conversation."""
-    if request.type == "group" and not request.name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Group conversations require a name",
-        )
+    if request.type == "direct":
+        # Direct conversation: sender + target_id must be different users
+        if not request.target_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="target_id is required for direct conversation",
+            )
+        if request.target_id == current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot create direct conversation with yourself",
+            )
+    elif request.type == "group":
+        # Group conversation requires name
+        if not request.name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Group conversations require a name",
+            )
 
     conv_id = str(uuid4())
     now = datetime.now(timezone.utc)
@@ -354,7 +371,7 @@ async def create_conversation(
         db_conv = Conversation(
             id=conv_id,
             type=ConversationType(request.type),
-            name=request.name or current_user.username,
+            name="",
             owner_id=current_user.user_id,
             extra_data=request.metadata if request.metadata else {},
             created_at=now,
@@ -372,18 +389,31 @@ async def create_conversation(
         )
         db_sync.add(db_owner_member)
 
-        # Add other members
-        for member_id in request.member_ids:
-            if member_id != current_user.user_id:
-                db_member = ConversationMember(
-                    conversation_id=conv_id,
-                    user_id=member_id,
-                    role=MemberRole.member,
-                    invited_by=current_user.user_id,
-                    joined_at=now,
-                    is_active=True,
-                )
-                db_sync.add(db_member)
+        # Add other members based on conversation type
+        if request.type == "direct":
+            # Direct: add target_id as the other member
+            db_member = ConversationMember(
+                conversation_id=conv_id,
+                user_id=request.target_id,
+                role=MemberRole.member,
+                invited_by=current_user.user_id,
+                joined_at=now,
+                is_active=True,
+            )
+            db_sync.add(db_member)
+        else:
+            # Group: add member_ids (excluding owner)
+            for member_id in request.member_ids:
+                if member_id != current_user.user_id:
+                    db_member = ConversationMember(
+                        conversation_id=conv_id,
+                        user_id=member_id,
+                        role=MemberRole.member,
+                        invited_by=current_user.user_id,
+                        joined_at=now,
+                        is_active=True,
+                    )
+                    db_sync.add(db_member)
 
         db_sync.commit()
         db_sync.refresh(db_conv)
