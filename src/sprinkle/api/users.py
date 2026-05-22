@@ -13,6 +13,7 @@ from sprinkle.api.dependencies import get_current_user
 from sprinkle.kernel.auth import UserCredentials
 from sprinkle.models.user import User, UserType
 from sprinkle.storage.database import SessionLocal
+from typing import List
 
 router = APIRouter()
 
@@ -27,15 +28,23 @@ class UserResponse(BaseModel):
     username: str
     display_name: str
     user_type: str
+    avatar_url: str = ""
     metadata: Dict[str, Any] = {}
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
+class UserListResponse(BaseModel):
+    """User list response schema."""
+    items: List[UserResponse]
+    total: int
+
+
 class UpdateUserRequest(BaseModel):
     """Update user request schema."""
     display_name: str | None = Field(None, max_length=100)
+    avatar_url: str | None = Field(None, max_length=500)
     metadata: Dict[str, Any] | None = None
 
 
@@ -59,6 +68,54 @@ def clear_user_metadata() -> None:
 # ============================================================================
 # API Endpoints
 # ============================================================================
+
+@router.get(
+    "/",
+    response_model=UserListResponse,
+    summary="List all users",
+)
+async def list_users(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: UserCredentials = Depends(get_current_user),
+) -> UserListResponse:
+    """List all users in the system.
+    
+    Requires authentication.
+    
+    - **skip**: Number of records to skip (for pagination)
+    - **limit**: Maximum number of records to return (max 100)
+    """
+    db = SessionLocal()
+    try:
+        total = db.query(User).count()
+        users = db.query(User).offset(skip).limit(limit).all()
+        
+        items = []
+        for user in users:
+            # Parse extra_data as JSON for metadata
+            extra_data = {}
+            try:
+                import json
+                if user.extra_data:
+                    extra_data = json.loads(user.extra_data) if isinstance(user.extra_data, str) else user.extra_data
+            except Exception:
+                pass
+            
+            items.append(UserResponse(
+                id=user.id,
+                username=user.username,
+                display_name=user.display_name,
+                user_type="agent" if user.user_type == UserType.agent else "human",
+                avatar_url=user.avatar_url or "",
+                metadata=extra_data,
+                created_at=user.created_at,
+            ))
+        
+        return UserListResponse(items=items, total=total)
+    finally:
+        db.close()
+
 
 @router.get(
     "/me",
@@ -85,6 +142,46 @@ async def get_me(
     try:
         import json
         if db_user.extra_data:
+            extra_data = json.loads(db_user.extra_data) if isinstance(db_user.extra_data, str) else db_user.extra_data
+    except Exception:
+        pass
+    
+    return UserResponse(
+        id=db_user.id,
+        username=db_user.username,
+        display_name=db_user.display_name,
+        user_type="agent" if db_user.user_type == UserType.agent else "human",
+        avatar_url=db_user.avatar_url or "",
+        metadata=extra_data,
+        created_at=db_user.created_at,
+    )
+
+
+@router.get(
+    "/{user_id}",
+    response_model=UserResponse,
+    summary="Get user by ID",
+)
+async def get_user_by_id_endpoint(
+    user_id: str,
+    current_user: UserCredentials = Depends(get_current_user),
+) -> UserResponse:
+    """Get user information by user ID.
+    
+    Requires authentication.
+    """
+    db_user = get_user_by_id(user_id)
+    if not db_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    
+    # Parse extra_data as JSON for metadata
+    extra_data = {}
+    try:
+        import json
+        if db_user.extra_data:
             extra_data = json.loads(db_user.extra_data)
     except Exception:
         pass
@@ -94,6 +191,7 @@ async def get_me(
         username=db_user.username,
         display_name=db_user.display_name,
         user_type="agent" if db_user.user_type == UserType.agent else "human",
+        avatar_url=db_user.avatar_url or "",
         metadata=extra_data,
         created_at=db_user.created_at,
     )
@@ -128,6 +226,10 @@ async def update_me(
         if request.display_name is not None:
             user.display_name = request.display_name
         
+        # Update avatar_url if provided
+        if request.avatar_url is not None:
+            user.avatar_url = request.avatar_url
+        
         # Merge metadata if provided
         if request.metadata is not None:
             current_extra = {}
@@ -159,6 +261,7 @@ async def update_me(
             username=user.username,
             display_name=user.display_name,
             user_type="agent" if user.user_type == UserType.agent else "human",
+            avatar_url=user.avatar_url or "",
             metadata=extra_data,
             created_at=user.created_at,
         )

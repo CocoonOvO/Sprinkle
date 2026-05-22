@@ -20,6 +20,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False, default="")
     display_name = Column(String(100), nullable=False)
     user_type = Column(SQLEnum(UserType), default=UserType.human, nullable=False)
+    avatar_url = Column(String(500), default="", nullable=False)
     extra_data = Column(JSONB, default={}, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
