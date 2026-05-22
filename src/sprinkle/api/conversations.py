@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sprinkle.kernel.auth import UserCredentials
 from sprinkle.api.dependencies import get_current_user, get_db_session
 from sprinkle.models import Conversation, ConversationMember, ConversationType, MemberRole, Message
+from sprinkle.models.user import User, UserType
 from sprinkle.storage.database import SessionLocal
 
 router = APIRouter()
@@ -56,6 +57,20 @@ class UpdateConversationRequest(BaseModel):
     name: str | None = Field(None, max_length=255)
     avatar_url: str | None = Field(None, max_length=500)
     metadata: Dict[str, Any] | None = None
+
+
+class ConversationPromptResponse(BaseModel):
+    """Conversation prompt response schema."""
+    conversation_id: str
+    conversation_prompt: str
+
+    model_config = {"from_attributes": True}
+
+
+
+class SetConversationPromptRequest(BaseModel):
+    """Set conversation prompt request schema."""
+    conversation_prompt: str = Field(..., max_length=5000)
 
 
 class ConversationListResponse(BaseModel):
@@ -509,6 +524,114 @@ async def update_conversation(
         return _build_conversation_response(conv, db_sync)
     except HTTPException:
         raise
+    finally:
+        db_sync.close()
+
+
+@router.get(
+    "/{conversation_id}/conversation-prompt",
+    response_model=ConversationPromptResponse,
+    summary="Get conversation prompt",
+)
+async def get_conversation_prompt(
+    conversation_id: str,
+    current_user: UserCredentials = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> ConversationPromptResponse:
+    db_sync = _get_db()
+    try:
+        _check_db_conversation_access(conversation_id, current_user.user_id, db_sync)
+
+        conv = db_sync.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        ).scalar_one()
+
+        if conv.type != ConversationType.direct:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only direct conversations support conversation prompt",
+            )
+
+        members = db_sync.execute(
+            select(ConversationMember).where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.is_active == True
+            )
+        ).scalars().all()
+
+        member_ids = [m.user_id for m in members]
+        agents = db_sync.execute(
+            select(User).where(User.id.in_(member_ids), User.user_type == UserType.agent)
+        ).scalars().all()
+
+        if not agents:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only conversations with an agent support conversation prompt",
+            )
+
+        extra = _parse_extra_data(conv.extra_data)
+        return ConversationPromptResponse(
+            conversation_id=conversation_id,
+            conversation_prompt=extra.get("conversation_prompt", ""),
+        )
+    finally:
+        db_sync.close()
+
+
+@router.put(
+    "/{conversation_id}/conversation-prompt",
+    response_model=ConversationPromptResponse,
+    summary="Set conversation prompt",
+)
+async def set_conversation_prompt(
+    conversation_id: str,
+    request: SetConversationPromptRequest,
+    current_user: UserCredentials = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> ConversationPromptResponse:
+    db_sync = _get_db()
+    try:
+        _check_db_conversation_access(conversation_id, current_user.user_id, db_sync)
+
+        conv = db_sync.execute(
+            select(Conversation).where(Conversation.id == conversation_id)
+        ).scalar_one()
+
+        if conv.type != ConversationType.direct:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only direct conversations support conversation prompt",
+            )
+
+        members = db_sync.execute(
+            select(ConversationMember).where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.is_active == True
+            )
+        ).scalars().all()
+
+        member_ids = [m.user_id for m in members]
+        agents = db_sync.execute(
+            select(User).where(User.id.in_(member_ids), User.user_type == UserType.agent)
+        ).scalars().all()
+
+        if not agents:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only conversations with an agent support conversation prompt",
+            )
+
+        extra = _parse_extra_data(conv.extra_data)
+        extra["conversation_prompt"] = request.conversation_prompt
+        conv.extra_data = extra
+        conv.updated_at = datetime.now(timezone.utc)
+        db_sync.commit()
+
+        return ConversationPromptResponse(
+            conversation_id=conversation_id,
+            conversation_prompt=request.conversation_prompt,
+        )
     finally:
         db_sync.close()
 
