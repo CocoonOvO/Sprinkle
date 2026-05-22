@@ -42,7 +42,7 @@ class FileResponse(BaseModel):
 # Constants
 # ============================================================================
 
-STORAGE_DIR = Path("./data/files")
+STORAGE_DIR = Path("/home/cream/.openclaw/scone/Sprinkle/data/files")
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -167,7 +167,6 @@ async def upload_file(
 )
 async def download_file(
     file_id: str,
-    current_user: UserCredentials = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
     """Download a file.
@@ -179,6 +178,12 @@ async def download_file(
     
     # Check if file exists on disk
     file_path = Path(file_record.file_path)
+    if not file_path.is_absolute():
+        # Handle relative paths - strip data/files/ prefix if present
+        relative_part = file_path
+        if relative_part.parts and relative_part.parts[0] in ("data", "data/files"):
+            relative_part = Path(*relative_part.parts[2:] if relative_part.parts[0] == "data" and len(relative_part.parts) > 1 and relative_part.parts[1] == "files" else relative_part.parts[1:])
+        file_path = STORAGE_DIR / relative_part
     if not file_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

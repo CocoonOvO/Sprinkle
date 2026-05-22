@@ -30,6 +30,7 @@ class ConversationResponse(BaseModel):
     id: str
     type: str
     name: str
+    avatar_url: str = ""
     owner_id: str
     metadata: Dict[str, Any] = {}
     created_at: datetime
@@ -53,6 +54,7 @@ class CreateConversationRequest(BaseModel):
 class UpdateConversationRequest(BaseModel):
     """Update conversation request schema."""
     name: str | None = Field(None, max_length=255)
+    avatar_url: str | None = Field(None, max_length=500)
     metadata: Dict[str, Any] | None = None
 
 
@@ -178,6 +180,7 @@ def _build_conversation_response(conv: Conversation, db: Optional[Session] = Non
         id=conv.id,
         type=conv.type.value if hasattr(conv.type, 'value') else conv.type,
         name=conv.name,
+        avatar_url=conv.avatar_url or "",
         owner_id=conv.owner_id,
         metadata=_parse_extra_data(conv.extra_data),
         created_at=conv.created_at,
@@ -476,6 +479,9 @@ async def update_conversation(
 
         if request.name is not None:
             conv.name = request.name
+
+        if request.avatar_url is not None:
+            conv.avatar_url = request.avatar_url
 
         if request.metadata is not None:
             current_meta = _parse_extra_data(conv.extra_data)

@@ -18,6 +18,7 @@ class Conversation(Base):
     id = Column(String(36), primary_key=True)  # UUID
     type = Column(SQLEnum(ConversationType), default=ConversationType.direct, nullable=False)
     name = Column(String(255), nullable=False)
+    avatar_url = Column(String(500), default="", nullable=False)
     owner_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     extra_data = Column(JSONB, default={}, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
