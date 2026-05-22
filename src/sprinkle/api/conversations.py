@@ -365,19 +365,19 @@ async def create_conversation(
         # Direct conversation: sender + target_id must be different users
         if not request.target_id:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="target_id is required for direct conversation",
             )
         if request.target_id == current_user.user_id:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Cannot create direct conversation with yourself",
             )
     elif request.type == "group":
         # Group conversation requires name
         if not request.name:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Group conversations require a name",
             )
 
@@ -548,8 +548,8 @@ async def get_conversation_prompt(
 
         if conv.type != ConversationType.direct:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only direct conversations support conversation prompt",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Conversation prompt is not available for group conversations",
             )
 
         members = db_sync.execute(
@@ -566,7 +566,7 @@ async def get_conversation_prompt(
 
         if not agents:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only conversations with an agent support conversation prompt",
             )
 
@@ -600,8 +600,8 @@ async def set_conversation_prompt(
 
         if conv.type != ConversationType.direct:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only direct conversations support conversation prompt",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Conversation prompt is not available for group conversations",
             )
 
         members = db_sync.execute(
@@ -618,7 +618,7 @@ async def set_conversation_prompt(
 
         if not agents:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only conversations with an agent support conversation prompt",
             )
 
@@ -710,13 +710,13 @@ async def add_conversation_member(
 
     if not user_id_to_add:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="user_id is required",
         )
 
     if role_str not in ("member", "admin"):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Invalid role: {role_str}. Must be one of: member, admin",
         )
 
@@ -737,7 +737,7 @@ async def add_conversation_member(
 
         if existing is not None:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="User is already a member",
             )
 
@@ -797,7 +797,7 @@ async def remove_conversation_member(
 
         if conv.owner_id == user_id:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail="Cannot remove the owner",
             )
 
