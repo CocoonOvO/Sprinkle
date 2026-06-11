@@ -60,6 +60,16 @@ class LoggingConfig(BaseModel):
     backup_count: int = 5
 
 
+class OpenClawGatewayConfig(BaseModel):
+    """OpenClaw Gateway configuration."""
+    enabled: bool = True
+    gateway_url: str = "ws://127.0.0.1:18789"
+    api_token: Optional[str] = None  # Gateway auth token
+    default_agent_id: str = "scone"  # Default agent ID
+    timeout: float = 30.0  # Request timeout in seconds
+    max_retries: int = 3  # Maximum retry attempts
+
+
 class Settings(BaseSettings):
     """Main settings class that supports env var override.
     
@@ -73,6 +83,7 @@ class Settings(BaseSettings):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    openclaw: OpenClawGatewayConfig = Field(default_factory=OpenClawGatewayConfig)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -162,6 +173,8 @@ def get_settings(config_path: Optional[str] = None) -> Settings:
         settings_kwargs["redis"] = RedisConfig(**yaml_config["redis"])
     if "logging" in yaml_config:
         settings_kwargs["logging"] = LoggingConfig(**yaml_config["logging"])
+    if "openclaw" in yaml_config:
+        settings_kwargs["openclaw"] = OpenClawGatewayConfig(**yaml_config["openclaw"])
     
     # Create settings - env vars are processed automatically by pydantic-settings
     # when we use _env_file=None to prevent loading .env file, but keep env parsing
@@ -230,6 +243,20 @@ def _apply_env_overrides(settings: Settings) -> None:
         settings.logging.max_bytes = int(os.environ["LOGGING__MAX_BYTES"])
     if "LOGGING__BACKUP_COUNT" in os.environ:
         settings.logging.backup_count = int(os.environ["LOGGING__BACKUP_COUNT"])
+
+    # OpenClaw Gateway config overrides
+    if "OPENCLAW__ENABLED" in os.environ:
+        settings.openclaw.enabled = os.environ["OPENCLAW__ENABLED"].lower() in ("true", "1", "yes")
+    if "OPENCLAW__GATEWAY_URL" in os.environ:
+        settings.openclaw.gateway_url = os.environ["OPENCLAW__GATEWAY_URL"]
+    if "OPENCLAW__API_TOKEN" in os.environ:
+        settings.openclaw.api_token = os.environ["OPENCLAW__API_TOKEN"]
+    if "OPENCLAW__DEFAULT_AGENT_ID" in os.environ:
+        settings.openclaw.default_agent_id = os.environ["OPENCLAW__DEFAULT_AGENT_ID"]
+    if "OPENCLAW__TIMEOUT" in os.environ:
+        settings.openclaw.timeout = float(os.environ["OPENCLAW__TIMEOUT"])
+    if "OPENCLAW__MAX_RETRIES" in os.environ:
+        settings.openclaw.max_retries = int(os.environ["OPENCLAW__MAX_RETRIES"])
 
 
 # ============================================================================

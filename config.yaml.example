@@ -26,3 +26,12 @@ logging:
   file: "logs/sprinkle.log"
   max_bytes: 10485760
   backup_count: 5
+
+# OpenClaw Gateway Configuration
+openclaw:
+  enabled: true
+  gateway_url: "ws://127.0.0.1:18789"
+  api_token: null  # Set to your OpenClaw Gateway token if required
+  default_agent_id: "scone"
+  timeout: 30.0
+  max_retries: 3

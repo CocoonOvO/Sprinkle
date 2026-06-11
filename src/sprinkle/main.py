@@ -65,7 +65,33 @@ async def lifespan(app: FastAPI):
     handler = get_ws_handler()
     await handler.start()
     
+    # Startup: initialize agent gateway manager
+    from sprinkle.services.agent_gateway import (
+        gateway_manager,
+        GatewayProvider,
+        OpenClawGatewayClient,
+    )
+    
+    # Register OpenClaw gateway if not already registered
+    if GatewayProvider.OPENCLAW not in gateway_manager.list_registered_providers():
+        gateway_manager.register(GatewayProvider.OPENCLAW, OpenClawGatewayClient)
+    
+    # Initialize OpenClaw gateway with config if enabled
+    if settings.openclaw.enabled:
+        client = gateway_manager.get(
+            GatewayProvider.OPENCLAW,
+            gateway_url=settings.openclaw.gateway_url,
+            api_token=settings.openclaw.api_token,
+            default_agent_id=settings.openclaw.default_agent_id,
+            timeout=settings.openclaw.timeout,
+        )
+        await client.initialize()
+        app.state.openclaw_gateway = client
+    
     yield
+    
+    # Shutdown: close agent gateway manager
+    await gateway_manager.close_all()
     
     # Shutdown: stop WebSocket handler
     await handler.stop()
@@ -106,4 +132,9 @@ if __name__ == "__main__":
         host=settings.app.host,
         port=settings.app.port,
         reload=settings.app.debug,
+        # 只监控源码和配置，不监控日志和临时文件
+        reload_dirs=[
+            str(Path(__file__).parent.parent.parent / "src"),
+            str(Path(__file__).parent.parent.parent / "config.yaml"),
+        ],
     )
